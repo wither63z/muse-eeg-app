@@ -34,6 +34,7 @@ class DspEngine {
   private packetsDropped: ChannelMap<number> = { TP9: 0, AF7: 0, AF8: 0, TP10: 0 };
   private statsTimer: ReturnType<typeof setInterval> | null = null;
   private sequenceUnwrappers: Map<EegChannel, { lastSeq: number | null; wraps: number; lastAbsPacket: number | null }> = new Map();
+  private lastValidSample: Map<EegChannel, number> = new Map();
 
   constructor() {
     this.fft = new Fft(FFT_SIZE);
@@ -54,12 +55,37 @@ class DspEngine {
     const scopeBuffer = this.scopeBuf.get(channel);
     if (!fftBuffer || !scopeBuffer) return;
 
-    // Track sequence for stats
-    this.trackSequence(channel, sequence);
+    // Track sequence for stats and gap filling
+    const gap = this.trackSequence(channel, sequence);
 
-    // Empujar a ambos buffers
+    // Rellenar huecos repitiendo la última muestra válida (no ceros)
+    if (gap > 0 && gap < 50) {
+      const lastSample = this.lastValidSample.get(channel) ?? 0;
+      const fillSamples = new Float32Array(gap * 12);
+      fillSamples.fill(lastSample);
+      fftBuffer.pushMany(fillSamples);
+      scopeBuffer.pushMany(fillSamples);
+
+      // Notificar a callbacks de raw samples para las muestras de relleno
+      const now = Date.now();
+      for (let i = 0; i < fillSamples.length; i++) {
+        const sample: TimedSample = {
+          channel,
+          tMs: now,
+          uv: fillSamples[i],
+        };
+        for (const cb of this.rawSampleCallbacks) {
+          cb(sample);
+        }
+      }
+    }
+
+    // Empujar muestras actuales a ambos buffers
     fftBuffer.pushMany(samplesUv);
     scopeBuffer.pushMany(samplesUv);
+
+    // Guardar última muestra válida para futuro gap filling
+    this.lastValidSample.set(channel, samplesUv[samplesUv.length - 1]);
 
     // Notificar a callbacks de raw samples (para recorder)
     const now = Date.now();
@@ -75,15 +101,15 @@ class DspEngine {
     }
   }
 
-  private trackSequence(channel: EegChannel, sequence: number): void {
+  private trackSequence(channel: EegChannel, sequence: number): number {
     const unwrapper = this.sequenceUnwrappers.get(channel);
-    if (!unwrapper) return;
+    if (!unwrapper) return 0;
 
     if (unwrapper.lastSeq === null) {
       unwrapper.lastSeq = sequence;
       unwrapper.lastAbsPacket = 0;
       this.packetsReceived[channel]++;
-      return;
+      return 0;
     }
 
     // Detectar wrap
@@ -102,6 +128,7 @@ class DspEngine {
     unwrapper.lastSeq = sequence;
     unwrapper.lastAbsPacket = absPacket;
     this.packetsReceived[channel]++;
+    return gap;
   }
 
   start(): void {
