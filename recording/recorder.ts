@@ -1,4 +1,4 @@
-import * as FileSystem from 'expo-file-system';
+import { File, Directory, Paths } from 'expo-file-system';
 import { RecordingMeta, TimedSample, BandPowerFrame, ChannelMap, FitLevel, Vec3 } from '@/types/muse';
 import { EEG_CHANNELS } from '@/types/muse';
 import { MM_CSV_HEADER, formatRow, makeFileName, RowState } from './csvFormat';
@@ -23,12 +23,12 @@ export interface RecordingSink {
  * expo-file-system de SDK 51+ no permite append, de ahí los segmentos.
  */
 class SegmentedSink implements RecordingSink {
-  private dir: string;
+  private dir: Directory;
   private partNumber: number = 0;
   private currentRows: string[] = [];
   private totalRows: number = 0;
 
-  constructor(dir: string) {
+  constructor(dir: Directory) {
     this.dir = dir;
   }
 
@@ -46,11 +46,9 @@ class SegmentedSink implements RecordingSink {
     if (this.currentRows.length === 0) return;
 
     this.partNumber++;
-    const partFileName = `part-${String(this.partNumber).padStart(4, '0')}.csv`;
-    const partUri = `${this.dir}${partFileName}`;
-
-    const content = this.currentRows.join('\n') + '\n';
-    await FileSystem.writeAsStringAsync(partUri, content);
+    const partFile = new File(this.dir, `part-${String(this.partNumber).padStart(4, '0')}.csv`);
+    partFile.create({ overwrite: true });
+    partFile.write(this.currentRows.join('\n') + '\n');
 
     this.currentRows = [];
   }
@@ -60,21 +58,20 @@ class SegmentedSink implements RecordingSink {
 
     // Escribir meta.json
     const meta: RecordingMeta = {
-      id: this.dir.split('/').pop() || '',
+      id: this.dir.name || '',
       fileName: makeFileName(new Date()),
       startedAtMs: Date.now(),
       durationMs: 0,
       rowCount: this.totalRows,
       sizeBytes: 0,
-      uri: this.dir,
+      uri: this.dir.uri,
     };
 
-    await FileSystem.writeAsStringAsync(
-      `${this.dir}meta.json`,
-      JSON.stringify(meta),
-    );
+    const metaFile = new File(this.dir, 'meta.json');
+    metaFile.create({ overwrite: true });
+    metaFile.write(JSON.stringify(meta));
 
-    return this.dir;
+    return this.dir.uri;
   }
 }
 
@@ -108,8 +105,8 @@ class Recorder {
     }
 
     const id = Date.now().toString(36);
-    const dir = `${FileSystem.documentDirectory}recordings/${id}/`;
-    await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
+    const dir = new Directory(Paths.document, 'recordings', id);
+    dir.create({ intermediates: true });
 
     this.sink = new SegmentedSink(dir);
     this.recording = true;

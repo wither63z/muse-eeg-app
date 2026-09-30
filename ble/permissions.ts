@@ -14,7 +14,7 @@ export async function ensureBlePermissions(): Promise<boolean> {
     return true;
   }
 
-  const version = Platform.Version;
+  const version = typeof Platform.Version === 'string' ? parseInt(Platform.Version, 10) : Platform.Version;
 
   if (version >= 31) {
     // Android 12+ (API 31+)

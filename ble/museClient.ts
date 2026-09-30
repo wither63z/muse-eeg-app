@@ -15,7 +15,7 @@ const EEG_CHANNELS: EegChannel[] = ['TP9', 'AF7', 'AF8', 'TP10'];
  * Secuencia de connect(deviceId):
  * 1. status = 'connecting'; manager.connectToDevice(deviceId, { requestMTU: 247 })
  * 2. status = 'discovering'; device.discoverAllServicesAndCharacteristics()
- * 3. Suscribir con monitorCharacteristicForDevice a: 4 canales EEG, BATTERY, ACCEL, GYRO
+ * 3. Suscribir con monitorCharacteristicForService a: 4 canales EEG, BATTERY, ACCEL, GYRO
  * 4. Escribir en CONTROL: h → p21 → d, con ~50 ms entre comandos
  * 5. status = 'streaming'; iniciar timers de dspEngine
  * 6. device.onDisconnected(...): detener timers, store.reset(), status = 'idle'
@@ -137,7 +137,7 @@ class MuseClient {
     // Suscribir a canales EEG
     for (const channel of EEG_CHANNELS) {
       const charUuid = EEG_CHAR_BY_CHANNEL[channel];
-      this.device.monitorCharacteristicForDevice(
+      this.device.monitorCharacteristicForService(
         MUSE_SERVICE_UUID,
         charUuid,
         (error, characteristic) => {
@@ -159,7 +159,7 @@ class MuseClient {
     }
 
     // Suscribir a batería
-    this.device.monitorCharacteristicForDevice(
+    this.device.monitorCharacteristicForService(
       MUSE_SERVICE_UUID,
       MUSE_CHAR.BATTERY,
       (error, characteristic) => {
@@ -180,7 +180,7 @@ class MuseClient {
     );
 
     // Suscribir a accel
-    this.device.monitorCharacteristicForDevice(
+    this.device.monitorCharacteristicForService(
       MUSE_SERVICE_UUID,
       MUSE_CHAR.ACCEL,
       (error, characteristic) => {
@@ -201,7 +201,7 @@ class MuseClient {
     );
 
     // Suscribir a gyro
-    this.device.monitorCharacteristicForDevice(
+    this.device.monitorCharacteristicForService(
       MUSE_SERVICE_UUID,
       MUSE_CHAR.GYRO,
       (error, characteristic) => {
@@ -231,14 +231,14 @@ class MuseClient {
       const encoded = encodeCommand(cmd);
       try {
         // Intentar write-without-response primero
-        await this.device.writeCharacteristicWithoutResponseForDevice(
+        await this.device.writeCharacteristicWithoutResponseForService(
           MUSE_SERVICE_UUID,
           MUSE_CHAR.CONTROL,
           encoded,
         );
       } catch {
         // Fallback a write-with-response
-        await this.device.writeCharacteristicWithResponseForDevice(
+        await this.device.writeCharacteristicWithResponseForService(
           MUSE_SERVICE_UUID,
           MUSE_CHAR.CONTROL,
           encoded,

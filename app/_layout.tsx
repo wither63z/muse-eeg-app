@@ -1,7 +1,7 @@
 import { Stack } from 'expo-router';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { useEffect } from 'react';
-import { recordingsRepo } from '@/recording/recordingsRepo';
+import * as recordingsRepo from '@/recording/recordingsRepo';
 import { useMuseStore } from '@/store/useMuseStore';
 
 export default function RootLayout() {

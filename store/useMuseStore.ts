@@ -92,6 +92,6 @@ export const useMuseStore = create<MuseStore>()(
         isRecording: false,
         recordingStartedAtMs: null,
         recordingRowCount: 0,
-      })),
+      }),
   })),
 );

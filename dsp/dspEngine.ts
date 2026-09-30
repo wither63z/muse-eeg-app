@@ -1,4 +1,4 @@
-import { EegPacket, EegChannel, TimedSample, BandPowerFrame, BandMap, ChannelMap } from '@/types/muse';
+import { EegPacket, EegChannel, TimedSample, BandPowerFrame, BandMap, ChannelMap, FitCheck } from '@/types/muse';
 import { FFT_SIZE, SCOPE_HISTORY_SECONDS, SAMPLE_RATE_HZ, BANDS, BAND_UPDATE_HZ, FIT_UPDATE_HZ, MAINS_HZ } from '@/constants/muse';
 import { RingBuffer } from './ringBuffer';
 import { Fft, hannWindow } from './fft';
@@ -25,7 +25,7 @@ class DspEngine {
   private fitTimer: ReturnType<typeof setInterval> | null = null;
   private rawSampleCallbacks: Set<(s: TimedSample) => void> = new Set();
   private bandCallbacks: Set<(f: BandPowerFrame) => void> = new Set();
-  private lastFit: { fit: ChannelMap<number>; headbandOn: boolean } | null = null;
+  private lastFit: { fit: FitCheck; headbandOn: boolean } | null = null;
   private pendingCounters: ChannelMap<number> = { TP9: 0, AF7: 0, AF8: 0, TP10: 0 };
   private highPassState: Map<EegChannel, { yPrev: number; xPrev: number }> = new Map();
 
@@ -194,12 +194,12 @@ class DspEngine {
       windows[ch] = w;
     }
 
-    const previous = this.lastFit?.fit ?? { TP9: 2, AF7: 2, AF8: 2, TP10: 2 };
+    const previous: FitCheck = this.lastFit?.fit ?? { TP9: 2, AF7: 2, AF8: 2, TP10: 2 };
     const result = computeFit(windows, previous, this.pendingCounters);
     this.lastFit = result;
   }
 
-  getLastFit(): { fit: ChannelMap<number>; headbandOn: boolean } | null {
+  getLastFit(): { fit: FitCheck; headbandOn: boolean } | null {
     return this.lastFit;
   }
 }

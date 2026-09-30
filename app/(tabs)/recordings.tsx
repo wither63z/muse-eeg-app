@@ -3,7 +3,7 @@ import { View, Text, TouchableOpacity, FlatList, StyleSheet } from 'react-native
 import { RecordingRow } from '@/components/RecordingRow';
 import { useMuseStore } from '@/store/useMuseStore';
 import { recorder } from '@/recording/recorder';
-import { recordingsRepo } from '@/recording/recordingsRepo';
+import * as recordingsRepo from '@/recording/recordingsRepo';
 
 export default function RecordingsScreen() {
   const status = useMuseStore((s) => s.status);
@@ -43,7 +43,7 @@ export default function RecordingsScreen() {
   };
 
   const handleDelete = async (id: string) => {
-    await recordingsRepo.delete(id);
+    await recordingsRepo.deleteRecording(id);
     const list = await recordingsRepo.list();
     useMuseStore.getState().setRecordings(list);
   };

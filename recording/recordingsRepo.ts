@@ -1,4 +1,4 @@
-import * as FileSystem from 'expo-file-system';
+import { File, Directory, Paths } from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 import { RecordingMeta } from '@/types/muse';
 import { MM_CSV_HEADER } from './csvFormat';
@@ -7,19 +7,27 @@ import { MM_CSV_HEADER } from './csvFormat';
  * Repositorio de grabaciones — lista, elimina, exporta y comparte.
  */
 export async function list(): Promise<RecordingMeta[]> {
-  const recordingsDir = `${FileSystem.documentDirectory}recordings/`;
+  const recordingsDir = new Directory(Paths.document, 'recordings');
 
   try {
-    const dirs = await FileSystem.readDirectoryAsync(recordingsDir);
+    if (!recordingsDir.exists) {
+      return [];
+    }
+
+    const dirs = recordingsDir.list();
     const metas: RecordingMeta[] = [];
 
     for (const dir of dirs) {
-      const metaPath = `${recordingsDir}${dir}/meta.json`;
-      try {
-        const content = await FileSystem.readAsStringAsync(metaPath);
-        metas.push(JSON.parse(content));
-      } catch {
-        // Si no hay meta.json, ignorar
+      if (dir instanceof Directory) {
+        const metaFile = new File(dir, 'meta.json');
+        if (metaFile.exists) {
+          try {
+            const content = metaFile.textSync();
+            metas.push(JSON.parse(content));
+          } catch {
+            // Si no se puede leer, ignorar
+          }
+        }
       }
     }
 
@@ -29,9 +37,11 @@ export async function list(): Promise<RecordingMeta[]> {
   }
 }
 
-export async function delete(id: string): Promise<void> {
-  const dir = `${FileSystem.documentDirectory}recordings/${id}/`;
-  await FileSystem.deleteAsync(dir, { idempotent: true });
+export async function deleteRecording(id: string): Promise<void> {
+  const dir = new Directory(Paths.document, 'recordings', id);
+  if (dir.exists) {
+    dir.delete();
+  }
 }
 
 /**
@@ -39,29 +49,30 @@ export async function delete(id: string): Promise<void> {
  * Devuelve el URI del archivo exportado.
  */
 export async function exportCsv(id: string): Promise<string> {
-  const dir = `${FileSystem.documentDirectory}recordings/${id}/`;
-  const metaPath = `${dir}meta.json`;
+  const dir = new Directory(Paths.document, 'recordings', id);
+  const metaFile = new File(dir, 'meta.json');
 
-  const metaContent = await FileSystem.readAsStringAsync(metaPath);
+  const metaContent = metaFile.textSync();
   const meta: RecordingMeta = JSON.parse(metaContent);
 
   // Leer todas las partes
-  const files = await FileSystem.readDirectoryAsync(dir);
-  const partFiles = files
-    .filter((f) => f.startsWith('part-') && f.endsWith('.csv'))
-    .sort();
-
   const parts: string[] = [MM_CSV_HEADER];
-  for (const part of partFiles) {
-    const content = await FileSystem.readAsStringAsync(`${dir}${part}`);
-    parts.push(content);
+  const files = dir.list()
+    .filter((f) => f.name.startsWith('part-') && f.name.endsWith('.csv'))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  for (const part of files) {
+    if (part instanceof File) {
+      parts.push(part.textSync());
+    }
   }
 
   // Escribir CSV en cacheDirectory
-  const outputUri = `${FileSystem.cacheDirectory}${meta.fileName}`;
-  await FileSystem.writeAsStringAsync(outputUri, parts.join('\n'));
+  const outputFile = new File(Paths.cache, meta.fileName);
+  outputFile.create({ overwrite: true });
+  outputFile.write(parts.join('\n'));
 
-  return outputUri;
+  return outputFile.uri;
 }
 
 /**
