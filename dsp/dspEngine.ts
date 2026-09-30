@@ -3,6 +3,7 @@ import { FFT_SIZE, SCOPE_HISTORY_SECONDS, SAMPLE_RATE_HZ, BANDS, BAND_UPDATE_HZ,
 import { RingBuffer } from './ringBuffer';
 import { Fft, hannWindow } from './fft';
 import { computeFit } from './fitCheck';
+import { useMuseStore } from '@/store/useMuseStore';
 
 const EEG_CHANNELS: EegChannel[] = ['TP9', 'AF7', 'AF8', 'TP10'];
 
@@ -14,6 +15,7 @@ const EEG_CHANNELS: EegChannel[] = ['TP9', 'AF7', 'AF8', 'TP10'];
  * - scopeBuf: RingBuffer(256 * SCOPE_HISTORY_SECONDS) — historial para osciloscopio
  * 
  * Las muestras de 256 Hz nunca pasan por React ni Zustand.
+ * El engine publica bandas (10 Hz) y fit (2 Hz) directamente al store.
  */
 class DspEngine {
   private fftBuf: Map<EegChannel, RingBuffer> = new Map();
@@ -28,6 +30,10 @@ class DspEngine {
   private lastFit: { fit: FitCheck; headbandOn: boolean } | null = null;
   private pendingCounters: ChannelMap<number> = { TP9: 0, AF7: 0, AF8: 0, TP10: 0 };
   private highPassState: Map<EegChannel, { yPrev: number; xPrev: number }> = new Map();
+  private packetsReceived: ChannelMap<number> = { TP9: 0, AF7: 0, AF8: 0, TP10: 0 };
+  private packetsDropped: ChannelMap<number> = { TP9: 0, AF7: 0, AF8: 0, TP10: 0 };
+  private statsTimer: ReturnType<typeof setInterval> | null = null;
+  private sequenceUnwrappers: Map<EegChannel, { lastSeq: number | null; wraps: number; lastAbsPacket: number | null }> = new Map();
 
   constructor() {
     this.fft = new Fft(FFT_SIZE);
@@ -38,14 +44,18 @@ class DspEngine {
       this.fftBuf.set(ch, new RingBuffer(FFT_SIZE));
       this.scopeBuf.set(ch, new RingBuffer(SAMPLE_RATE_HZ * SCOPE_HISTORY_SECONDS));
       this.highPassState.set(ch, { yPrev: 0, xPrev: 0 });
+      this.sequenceUnwrappers.set(ch, { lastSeq: null, wraps: 0, lastAbsPacket: null });
     }
   }
 
   pushEeg(packet: EegPacket): void {
-    const { channel, samplesUv } = packet;
+    const { channel, sequence, samplesUv } = packet;
     const fftBuffer = this.fftBuf.get(channel);
     const scopeBuffer = this.scopeBuf.get(channel);
     if (!fftBuffer || !scopeBuffer) return;
+
+    // Track sequence for stats
+    this.trackSequence(channel, sequence);
 
     // Empujar a ambos buffers
     fftBuffer.pushMany(samplesUv);
@@ -65,6 +75,35 @@ class DspEngine {
     }
   }
 
+  private trackSequence(channel: EegChannel, sequence: number): void {
+    const unwrapper = this.sequenceUnwrappers.get(channel);
+    if (!unwrapper) return;
+
+    if (unwrapper.lastSeq === null) {
+      unwrapper.lastSeq = sequence;
+      unwrapper.lastAbsPacket = 0;
+      this.packetsReceived[channel]++;
+      return;
+    }
+
+    // Detectar wrap
+    if (sequence < unwrapper.lastSeq - 32768) {
+      unwrapper.wraps++;
+    }
+
+    const absPacket = unwrapper.wraps * 65536 + sequence;
+    const gap = unwrapper.lastAbsPacket !== null ? absPacket - unwrapper.lastAbsPacket - 1 : 0;
+
+    if (gap > 0 && gap < 50) {
+      // Paquetes perdidos
+      this.packetsDropped[channel] += gap;
+    }
+
+    unwrapper.lastSeq = sequence;
+    unwrapper.lastAbsPacket = absPacket;
+    this.packetsReceived[channel]++;
+  }
+
   start(): void {
     // Timer de bandas a 10 Hz
     this.bandTimer = setInterval(() => {
@@ -75,6 +114,11 @@ class DspEngine {
     this.fitTimer = setInterval(() => {
       this.computeFitCheck();
     }, 1000 / FIT_UPDATE_HZ);
+
+    // Timer de stats a 1 Hz
+    this.statsTimer = setInterval(() => {
+      this.updateStats();
+    }, 1000);
   }
 
   stop(): void {
@@ -86,6 +130,23 @@ class DspEngine {
       clearInterval(this.fitTimer);
       this.fitTimer = null;
     }
+    if (this.statsTimer) {
+      clearInterval(this.statsTimer);
+      this.statsTimer = null;
+    }
+  }
+
+  private updateStats(): void {
+    const store = useMuseStore.getState();
+    const totalReceived = Object.values(this.packetsReceived).reduce((a, b) => a + b, 0);
+    const totalExpected = 4 * 256; // 4 canales * 256 Hz
+    const effectiveRateHz = totalReceived > 0 ? (totalReceived / totalExpected) * 256 : null;
+
+    store.setStats({
+      packetsReceived: { ...this.packetsReceived },
+      packetsDropped: { ...this.packetsDropped },
+      effectiveRateHz,
+    });
   }
 
   getScopeWindow(ch: EegChannel, seconds: number, out: Float32Array): number {
@@ -174,6 +235,9 @@ class DspEngine {
 
     const frame: BandPowerFrame = { tMs, absoluteLog, relative };
 
+    // Publicar al store
+    useMuseStore.getState().setBands(frame);
+
     // Notificar a callbacks
     for (const cb of this.bandCallbacks) {
       cb(frame);
@@ -197,6 +261,10 @@ class DspEngine {
     const previous: FitCheck = this.lastFit?.fit ?? { TP9: 2, AF7: 2, AF8: 2, TP10: 2 };
     const result = computeFit(windows, previous, this.pendingCounters);
     this.lastFit = result;
+
+    // Publicar al store
+    useMuseStore.getState().setFit(result.fit);
+    useMuseStore.setState({ headbandOn: result.headbandOn });
   }
 
   getLastFit(): { fit: FitCheck; headbandOn: boolean } | null {

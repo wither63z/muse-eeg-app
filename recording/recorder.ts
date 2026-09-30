@@ -80,6 +80,8 @@ class SegmentedSink implements RecordingSink {
  * 
  * Las filas se acumulan en memoria y se vacían a archivos segmentados
  * cada 60 s (~15,360 filas). Límite duro de 20 minutos.
+ * 
+ * Captura accel/gyro/fit/battery del store a 10 Hz.
  */
 class Recorder {
   private sink: RecordingSink | null = null;
@@ -87,6 +89,7 @@ class Recorder {
   private startTime: number = 0;
   private flushTimer: ReturnType<typeof setInterval> | null = null;
   private rowCountTimer: ReturnType<typeof setInterval> | null = null;
+  private stateCaptureTimer: ReturnType<typeof setInterval> | null = null;
   private unsubscribeRaw: (() => void) | null = null;
   private unsubscribeBands: (() => void) | null = null;
   private lastBands: BandPowerFrame | null = null;
@@ -140,7 +143,31 @@ class Recorder {
       store.setRecordingRowCount(this.getRowCount());
     }, ROW_COUNT_INTERVAL_MS);
 
+    // Timer de captura de estado cada 100 ms (10 Hz)
+    this.stateCaptureTimer = setInterval(() => {
+      this.captureState();
+    }, 100);
+
     store.setRecording(true, this.startTime);
+  }
+
+  private captureState(): void {
+    const store = useMuseStore.getState();
+    const { accel, gyro, battery } = store.telemetry;
+    const { fit, headbandOn } = store;
+
+    if (accel) {
+      this.lastAccel = { x: accel.x, y: accel.y, z: accel.z };
+    }
+    if (gyro) {
+      this.lastGyro = { x: gyro.x, y: gyro.y, z: gyro.z };
+    }
+    if (battery) {
+      this.lastBattery = battery.percent;
+    }
+    if (fit) {
+      this.lastFit = { ...fit };
+    }
   }
 
   async stop(): Promise<RecordingMeta> {
@@ -158,6 +185,10 @@ class Recorder {
     if (this.rowCountTimer) {
       clearInterval(this.rowCountTimer);
       this.rowCountTimer = null;
+    }
+    if (this.stateCaptureTimer) {
+      clearInterval(this.stateCaptureTimer);
+      this.stateCaptureTimer = null;
     }
 
     // Desuscribirse
