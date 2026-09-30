@@ -1,6 +1,6 @@
 import React, { useRef, useCallback } from 'react';
-import { View, StyleSheet, Dimensions } from 'react-native';
-import { Canvas, Path, Skia, SkPath, Group } from '@shopify/react-native-skia';
+import { View, Text, StyleSheet, Dimensions } from 'react-native';
+import { Canvas, Path, Skia, SkPath, Group, Line } from '@shopify/react-native-skia';
 import { SharedValue, useSharedValue } from 'react-native-reanimated';
 import { EegChannel } from '@/types/muse';
 import { dspEngine } from '@/dsp/dspEngine';
@@ -17,9 +17,9 @@ const EEG_CHANNELS: EegChannel[] = ['TP9', 'AF7', 'AF8', 'TP10'];
 const CHANNEL_COLORS = ['#3b82f6', '#22c55e', '#f59e0b', '#ef4444'] as const;
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const LANE_HEIGHT = 180;
 
 export function EegScope({ windowSeconds, uvPerDiv, paused, displayHighPass }: EegScopeProps) {
-  // Crear SharedValues individuales (los hooks no pueden estar en un array)
   const path0 = useSharedValue(Skia.Path.Make());
   const path1 = useSharedValue(Skia.Path.Make());
   const path2 = useSharedValue(Skia.Path.Make());
@@ -31,7 +31,6 @@ export function EegScope({ windowSeconds, uvPerDiv, paused, displayHighPass }: E
 
   const draw = useCallback(() => {
     const width = SCREEN_WIDTH;
-    const laneHeight = 180;
 
     for (let chIdx = 0; chIdx < 4; chIdx++) {
       const ch = EEG_CHANNELS[chIdx];
@@ -42,8 +41,8 @@ export function EegScope({ windowSeconds, uvPerDiv, paused, displayHighPass }: E
 
       const path = Skia.Path.Make();
       const samplesPerColumn = Math.max(1, Math.floor(n / width));
-      const centerY = laneHeight * chIdx + laneHeight / 2;
-      const divHeight = laneHeight / 2;
+      const centerY = LANE_HEIGHT * chIdx + LANE_HEIGHT / 2;
+      const divHeight = LANE_HEIGHT / 2;
 
       for (let col = 0; col < width; col++) {
         const start = col * samplesPerColumn;
@@ -55,7 +54,6 @@ export function EegScope({ windowSeconds, uvPerDiv, paused, displayHighPass }: E
         for (let i = start; i < end; i++) {
           let uv = buf[i];
 
-          // High-pass de display (nunca para CSV)
           if (displayHighPass) {
             const state = highPassStateRef.current.get(ch) || { yPrev: 0, xPrev: 0 };
             const alpha = 0.9879;
@@ -73,8 +71,8 @@ export function EegScope({ windowSeconds, uvPerDiv, paused, displayHighPass }: E
         const yMin = centerY - (minUv / uvPerDiv) * divHeight;
         const yMax = centerY - (maxUv / uvPerDiv) * divHeight;
 
-        const clampedYMin = Math.max(laneHeight * chIdx, Math.min(laneHeight * (chIdx + 1), yMin));
-        const clampedYMax = Math.max(laneHeight * chIdx, Math.min(laneHeight * (chIdx + 1), yMax));
+        const clampedYMin = Math.max(LANE_HEIGHT * chIdx, Math.min(LANE_HEIGHT * (chIdx + 1), yMin));
+        const clampedYMax = Math.max(LANE_HEIGHT * chIdx, Math.min(LANE_HEIGHT * (chIdx + 1), yMax));
 
         path.moveTo(col, clampedYMin);
         path.lineTo(col, clampedYMax);
@@ -89,8 +87,20 @@ export function EegScope({ windowSeconds, uvPerDiv, paused, displayHighPass }: E
   return (
     <View style={styles.container}>
       <Canvas style={styles.canvas}>
+        {/* Líneas de cero por canal */}
         {EEG_CHANNELS.map((ch, i) => (
-          <Group key={ch}>
+          <Group key={`grid-${ch}`}>
+            <Line
+              p1={{ x: 0, y: LANE_HEIGHT * i + LANE_HEIGHT / 2 }}
+              p2={{ x: SCREEN_WIDTH, y: LANE_HEIGHT * i + LANE_HEIGHT / 2 }}
+              color="#334155"
+              strokeWidth={1}
+            />
+          </Group>
+        ))}
+        {/* Formas de onda */}
+        {EEG_CHANNELS.map((ch, i) => (
+          <Group key={`wave-${ch}`}>
             <Path
               path={paths[i]}
               color={CHANNEL_COLORS[i]}
@@ -100,6 +110,18 @@ export function EegScope({ windowSeconds, uvPerDiv, paused, displayHighPass }: E
           </Group>
         ))}
       </Canvas>
+      {/* Etiquetas de canal superpuestas */}
+      {EEG_CHANNELS.map((ch, i) => (
+        <View
+          key={`label-${ch}`}
+          style={[styles.channelLabel, { top: LANE_HEIGHT * i + 4 }]}
+          pointerEvents="none"
+        >
+          <Text style={[styles.channelLabelText, { color: CHANNEL_COLORS[i] }]}>
+            {ch}
+          </Text>
+        </View>
+      ))}
     </View>
   );
 }
@@ -111,5 +133,13 @@ const styles = StyleSheet.create({
   },
   canvas: {
     flex: 1,
+  },
+  channelLabel: {
+    position: 'absolute',
+    left: 4,
+  },
+  channelLabelText: {
+    fontSize: 12,
+    fontWeight: '600',
   },
 });
