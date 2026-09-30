@@ -136,11 +136,31 @@ class DspEngine {
     }
   }
 
+  private lastStatsTime: number = 0;
+  private lastPacketsReceived: ChannelMap<number> = { TP9: 0, AF7: 0, AF8: 0, TP10: 0 };
+
   private updateStats(): void {
     const store = useMuseStore.getState();
-    const totalReceived = Object.values(this.packetsReceived).reduce((a, b) => a + b, 0);
-    const totalExpected = 4 * 256; // 4 canales * 256 Hz
-    const effectiveRateHz = totalReceived > 0 ? (totalReceived / totalExpected) * 256 : null;
+    const now = Date.now();
+    const elapsed = (now - this.lastStatsTime) / 1000;
+
+    if (this.lastStatsTime === 0 || elapsed < 1) {
+      this.lastStatsTime = now;
+      this.lastPacketsReceived = { ...this.packetsReceived };
+      return;
+    }
+
+    // Calcular paquetes recibidos en el último segundo
+    const currentTotal = Object.values(this.packetsReceived).reduce((a, b) => a + b, 0);
+    const lastTotal = Object.values(this.lastPacketsReceived).reduce((a, b) => a + b, 0);
+    const packetsInInterval = currentTotal - lastTotal;
+
+    // Tasa efectiva: paquetes por segundo / paquetes esperados por segundo * 256 Hz
+    const expectedPerSecond = 4 * 256; // 4 canales * 256 Hz
+    const effectiveRateHz = (packetsInInterval / expectedPerSecond) * 256;
+
+    this.lastStatsTime = now;
+    this.lastPacketsReceived = { ...this.packetsReceived };
 
     store.setStats({
       packetsReceived: { ...this.packetsReceived },

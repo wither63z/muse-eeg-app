@@ -1,5 +1,6 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { View, Text, StyleSheet } from 'react-native';
+import Animated, { useSharedValue, useAnimatedStyle, withTiming } from 'react-native-reanimated';
 import { BandPowerFrame, EegChannel, BandMap } from '@/types/muse';
 import { BAND_NAMES } from '@/types/muse';
 
@@ -38,27 +39,47 @@ export function BandBars({ frame, channel, mode }: BandBarsProps) {
 
   return (
     <View style={styles.container}>
-      {BAND_NAMES.map((band) => {
-        const value = values[band];
-        const height = mode === 'relative'
-          ? value * 100
-          : Math.max(0, Math.min(100, ((value + 2) / 4) * 100));
+      {BAND_NAMES.map((band) => (
+        <BandBar
+          key={band}
+          value={values[band]}
+          color={BAND_COLORS[band]}
+          label={BAND_LABELS[band]}
+          mode={mode}
+        />
+      ))}
+    </View>
+  );
+}
 
-        return (
-          <View key={band} style={styles.barContainer}>
-            <Text style={styles.valueText}>{value.toFixed(2)}</Text>
-            <View style={styles.barBackground}>
-              <View
-                style={[
-                  styles.barFill,
-                  { height: `${height}%`, backgroundColor: BAND_COLORS[band] },
-                ]}
-              />
-            </View>
-            <Text style={styles.bandLabel}>{BAND_LABELS[band]}</Text>
-          </View>
-        );
-      })}
+function BandBar({ value, color, label, mode }: { value: number; color: string; label: string; mode: 'absolute' | 'relative' }) {
+  const heightPercent = mode === 'relative'
+    ? value * 100
+    : Math.max(0, Math.min(100, ((value + 2) / 4) * 100));
+
+  const animatedHeight = useSharedValue(heightPercent);
+
+  useEffect(() => {
+    animatedHeight.value = withTiming(heightPercent, { duration: 100 });
+  }, [heightPercent, animatedHeight]);
+
+  const animatedStyle = useAnimatedStyle(() => ({
+    height: `${animatedHeight.value}%`,
+  }));
+
+  return (
+    <View style={styles.barContainer}>
+      <Text style={styles.valueText}>{value.toFixed(2)}</Text>
+      <View style={styles.barBackground}>
+        <Animated.View
+          style={[
+            styles.barFill,
+            { backgroundColor: color },
+            animatedStyle,
+          ]}
+        />
+      </View>
+      <Text style={styles.bandLabel}>{label}</Text>
     </View>
   );
 }
@@ -69,7 +90,6 @@ function getValues(
   mode: 'absolute' | 'relative',
 ): BandMap<number> {
   if (channel === 'avg') {
-    // Promediar en potencia lineal, luego log para absolute
     const result: BandMap<number> = { delta: 0, theta: 0, alpha: 0, beta: 0, gamma: 0 };
     for (const band of BAND_NAMES) {
       if (mode === 'relative') {
@@ -79,7 +99,6 @@ function getValues(
         }
         result[band] = sum / 4;
       } else {
-        // Promedio en potencia lineal
         let sumLinear = 0;
         for (const ch of ['TP9', 'AF7', 'AF8', 'TP10'] as EegChannel[]) {
           const logVal = frame.absoluteLog[ch][band];
