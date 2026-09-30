@@ -1,10 +1,11 @@
-import { Device } from 'react-native-ble-plx';
-import { MuseDeviceInfo, ConnectionStatus, EegChannel, AccelerometerPacket, GyroscopePacket } from '@/types/muse';
+import { Device, State } from 'react-native-ble-plx';
+import { MuseDeviceInfo, ConnectionStatus, EegChannel } from '@/types/muse';
 import { MUSE_SERVICE_UUID, MUSE_CHAR, EEG_CHAR_BY_CHANNEL, MUSE_NAME_PREFIX, MUSE_PRESET, ACCEL_G_PER_LSB, GYRO_DPS_PER_LSB } from '@/constants/muse';
 import { getBleManager } from './bleManager';
 import { base64ToBytes, decodeEegPacket, decodeBattery, decodeMotion } from './museDecoder';
 import { encodeCommand, CMD_HALT, CMD_RESUME } from './museCommands';
 import { dspEngine } from '@/dsp/dspEngine';
+import { recorder } from '@/recording/recorder';
 import { useMuseStore } from '@/store/useMuseStore';
 
 const EEG_CHANNELS: EegChannel[] = ['TP9', 'AF7', 'AF8', 'TP10'];
@@ -18,7 +19,7 @@ const EEG_CHANNELS: EegChannel[] = ['TP9', 'AF7', 'AF8', 'TP10'];
  * 3. Suscribir con monitorCharacteristicForService a: 4 canales EEG, BATTERY, ACCEL, GYRO
  * 4. Escribir en CONTROL: h → p21 → d, con ~50 ms entre comandos
  * 5. status = 'streaming'; iniciar timers de dspEngine
- * 6. device.onDisconnected(...): detener timers, store.reset(), status = 'idle'
+ * 6. device.onDisconnected(...): detener timers, recorder.stop(), store.reset(), status = 'idle'
  */
 class MuseClient {
   private device: Device | null = null;
@@ -29,6 +30,13 @@ class MuseClient {
     store.setStatus('scanning');
 
     const manager = getBleManager();
+
+    // Verificar que Bluetooth esté encendido
+    const state = await manager.state();
+    if (state !== State.PoweredOn) {
+      store.setStatus('error', 'Bluetooth está apagado. Actívalo para buscar dispositivos.');
+      return;
+    }
 
     return new Promise((resolve) => {
       const discovered = new Map<string, MuseDeviceInfo>();
@@ -68,6 +76,13 @@ class MuseClient {
     try {
       store.setStatus('connecting');
 
+      // Verificar Bluetooth
+      const state = await manager.state();
+      if (state !== State.PoweredOn) {
+        store.setStatus('error', 'Bluetooth está apagado. Actívalo para conectar.');
+        return;
+      }
+
       // Conectar
       this.device = await manager.connectToDevice(deviceId, { requestMTU: 247 });
       await this.device.discoverAllServicesAndCharacteristics();
@@ -93,9 +108,19 @@ class MuseClient {
       dspEngine.start();
 
       // Listener de desconexión
-      this.device.onDisconnected((error) => {
+      this.device.onDisconnected(async (error) => {
         this.isConnected = false;
         dspEngine.stop();
+
+        // Detener grabación si estaba activa
+        if (useMuseStore.getState().isRecording) {
+          try {
+            await recorder.stop();
+          } catch {
+            // Si ya está detenido, ignorar
+          }
+        }
+
         store.reset();
         store.setStatus('idle');
         if (error) {
@@ -104,7 +129,8 @@ class MuseClient {
       });
 
     } catch (error) {
-      store.setStatus('error', error instanceof Error ? error.message : 'Error de conexión');
+      const message = error instanceof Error ? error.message : 'Error de conexión';
+      store.setStatus('error', message);
       throw error;
     }
   }
@@ -116,6 +142,15 @@ class MuseClient {
     store.setStatus('disconnecting');
 
     dspEngine.stop();
+
+    // Detener grabación si estaba activa
+    if (store.isRecording) {
+      try {
+        await recorder.stop();
+      } catch {
+        // Si ya está detenido, ignorar
+      }
+    }
 
     try {
       await this.device.cancelConnection();
@@ -230,21 +265,18 @@ class MuseClient {
     for (const cmd of commands) {
       const encoded = encodeCommand(cmd);
       try {
-        // Intentar write-without-response primero
         await this.device.writeCharacteristicWithoutResponseForService(
           MUSE_SERVICE_UUID,
           MUSE_CHAR.CONTROL,
           encoded,
         );
       } catch {
-        // Fallback a write-with-response
         await this.device.writeCharacteristicWithResponseForService(
           MUSE_SERVICE_UUID,
           MUSE_CHAR.CONTROL,
           encoded,
         );
       }
-      // Esperar 50 ms entre comandos
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
   }
