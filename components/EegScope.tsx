@@ -19,12 +19,12 @@ const CHANNEL_COLORS = ['#3b82f6', '#22c55e', '#f59e0b', '#ef4444'] as const;
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 export function EegScope({ windowSeconds, uvPerDiv, paused, displayHighPass }: EegScopeProps) {
-  const paths: SharedValue<SkPath>[] = [
-    useSharedValue(Skia.Path.Make()),
-    useSharedValue(Skia.Path.Make()),
-    useSharedValue(Skia.Path.Make()),
-    useSharedValue(Skia.Path.Make()),
-  ];
+  // Crear SharedValues individuales (los hooks no pueden estar en un array)
+  const path0 = useSharedValue(Skia.Path.Make());
+  const path1 = useSharedValue(Skia.Path.Make());
+  const path2 = useSharedValue(Skia.Path.Make());
+  const path3 = useSharedValue(Skia.Path.Make());
+  const paths: SharedValue<SkPath>[] = [path0, path1, path2, path3];
 
   const bufferRef = useRef<Float32Array>(new Float32Array(windowSeconds * 256));
   const highPassStateRef = useRef<Map<EegChannel, { yPrev: number; xPrev: number }>>(new Map());
@@ -32,7 +32,6 @@ export function EegScope({ windowSeconds, uvPerDiv, paused, displayHighPass }: E
   const draw = useCallback(() => {
     const width = SCREEN_WIDTH;
     const laneHeight = 180;
-    const totalHeight = laneHeight * 4;
 
     for (let chIdx = 0; chIdx < 4; chIdx++) {
       const ch = EEG_CHANNELS[chIdx];
@@ -46,7 +45,6 @@ export function EegScope({ windowSeconds, uvPerDiv, paused, displayHighPass }: E
       const centerY = laneHeight * chIdx + laneHeight / 2;
       const divHeight = laneHeight / 2;
 
-      let x = 0;
       for (let col = 0; col < width; col++) {
         const start = col * samplesPerColumn;
         const end = Math.min(start + samplesPerColumn, n);
