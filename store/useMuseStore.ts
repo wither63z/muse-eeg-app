@@ -1,0 +1,97 @@
+import { create } from 'zustand';
+import { subscribeWithSelector } from 'zustand/middleware';
+import { MuseStore, ConnectionStatus, MuseDeviceInfo, BatteryReading, Vec3, FitCheck, BandPowerFrame, StreamStats, RecordingMeta } from '@/types/muse';
+
+/**
+ * Store de Zustand — solo estado lento (≤10 Hz).
+ * 
+ * Prohibido almacenar muestras crudas o buffers aquí.
+ * Las muestras de 256 Hz viven en dspEngine (Float32Array).
+ * 
+ * Los componentes usan selectores finos y useShallow para objetos.
+ * Nunca useMuseStore() sin selector.
+ */
+export const useMuseStore = create<MuseStore>()(
+  subscribeWithSelector((set) => ({
+    // Estado inicial
+    status: 'idle' as ConnectionStatus,
+    errorMessage: null,
+    discovered: [] as MuseDeviceInfo[],
+    device: null,
+    telemetry: {
+      battery: null,
+      accel: null,
+      gyro: null,
+    },
+    fit: { TP9: 2, AF7: 2, AF8: 2, TP10: 2 } as FitCheck,
+    headbandOn: false,
+    bands: null,
+    stats: {
+      packetsReceived: { TP9: 0, AF7: 0, AF8: 0, TP10: 0 },
+      packetsDropped: { TP9: 0, AF7: 0, AF8: 0, TP10: 0 },
+      effectiveRateHz: null,
+    } as StreamStats,
+    isRecording: false,
+    recordingStartedAtMs: null,
+    recordingRowCount: 0,
+    recordings: [] as RecordingMeta[],
+
+    // Acciones
+    setStatus: (status: ConnectionStatus, errorMessage?: string | null) =>
+      set({ status, errorMessage: errorMessage ?? null }),
+
+    setDiscovered: (devices: MuseDeviceInfo[]) =>
+      set({ discovered: devices }),
+
+    setDevice: (device: MuseDeviceInfo | null) =>
+      set({ device }),
+
+    setBattery: (b: BatteryReading) =>
+      set((state) => ({
+        telemetry: { ...state.telemetry, battery: b },
+      })),
+
+    setMotion: (accel: Vec3 | null, gyro: Vec3 | null, tMs: number) =>
+      set((state) => ({
+        telemetry: {
+          ...state.telemetry,
+          accel: accel ? { ...accel, tMs } : null,
+          gyro: gyro ? { ...gyro, tMs } : null,
+        },
+      })),
+
+    setFit: (fit: FitCheck) =>
+      set({ fit }),
+
+    setBands: (frame: BandPowerFrame) =>
+      set({ bands: frame }),
+
+    setStats: (stats: StreamStats) =>
+      set({ stats }),
+
+    setRecording: (active: boolean, startedAtMs: number | null) =>
+      set({ isRecording: active, recordingStartedAtMs: startedAtMs }),
+
+    setRecordingRowCount: (n: number) =>
+      set({ recordingRowCount: n }),
+
+    setRecordings: (list: RecordingMeta[]) =>
+      set({ recordings: list }),
+
+    reset: () =>
+      set({
+        telemetry: { battery: null, accel: null, gyro: null },
+        fit: { TP9: 2, AF7: 2, AF8: 2, TP10: 2 },
+        headbandOn: false,
+        bands: null,
+        stats: {
+          packetsReceived: { TP9: 0, AF7: 0, AF8: 0, TP10: 0 },
+          packetsDropped: { TP9: 0, AF7: 0, AF8: 0, TP10: 0 },
+          effectiveRateHz: null,
+        },
+        isRecording: false,
+        recordingStartedAtMs: null,
+        recordingRowCount: 0,
+      })),
+  })),
+);

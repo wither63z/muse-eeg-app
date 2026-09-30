@@ -1,0 +1,41 @@
+{
+  "expo": {
+    "name": "Muse Open Monitor",
+    "slug": "muse-open-monitor",
+    "scheme": "museopenmonitor",
+    "version": "0.1.0",
+    "orientation": "default",
+    "userInterfaceStyle": "dark",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.example.museopenmonitor",
+      "infoPlist": {
+        "NSBluetoothAlwaysUsageDescription": "Se usa Bluetooth para conectar con tu diadema Muse y leer señales EEG.",
+        "NSBluetoothPeripheralUsageDescription": "Se usa Bluetooth para comunicarse con tu diadema Muse."
+      }
+    },
+    "android": {
+      "package": "com.example.museopenmonitor",
+      "permissions": [
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.BLUETOOTH_SCAN",
+        "android.permission.BLUETOOTH_CONNECT"
+      ]
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "react-native-ble-plx",
+        {
+          "isBackgroundEnabled": false,
+          "neverForLocation": true,
+          "bluetoothAlwaysPermission": "Se usa Bluetooth para conectar con tu diadema Muse y leer señales EEG."
+        }
+      ],
+      "expo-sharing"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
