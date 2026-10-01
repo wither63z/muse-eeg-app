@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, Platform } from 'react-native';
 import { useMuseStore } from '@/store/useMuseStore';
 import { museClient } from '@/ble/museClient';
 import { ensureBlePermissions } from '@/ble/permissions';
@@ -56,17 +56,26 @@ export function ConnectionCard() {
 
       <View style={styles.buttonRow}>
         {!isStreaming ? (
-          <TouchableOpacity
-            style={[styles.button, isScanning && styles.buttonDisabled]}
-            onPress={handleScan}
-            disabled={isScanning}
-          >
-            {isScanning ? (
-              <ActivityIndicator color="#fff" />
-            ) : (
-              <Text style={styles.buttonText}>Buscar</Text>
-            )}
-          </TouchableOpacity>
+          Platform.OS === 'web' ? (
+            <TouchableOpacity
+              style={styles.button}
+              onPress={() => museClient.connectSimulator()}
+            >
+              <Text style={styles.buttonText}>Conectar simulador</Text>
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity
+              style={[styles.button, isScanning && styles.buttonDisabled]}
+              onPress={handleScan}
+              disabled={isScanning}
+            >
+              {isScanning ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text style={styles.buttonText}>Buscar</Text>
+              )}
+            </TouchableOpacity>
+          )
         ) : (
           <TouchableOpacity
             style={[styles.button, styles.buttonDisconnect]}

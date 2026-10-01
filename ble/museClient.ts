@@ -1,7 +1,9 @@
-import { Device, State } from 'react-native-ble-plx';
+import type { Device } from 'react-native-ble-plx';
+import { Platform } from 'react-native';
 import { MuseDeviceInfo, ConnectionStatus, EegChannel } from '@/types/muse';
 import { MUSE_SERVICE_UUID, MUSE_CHAR, EEG_CHAR_BY_CHANNEL, MUSE_NAME_PREFIX, MUSE_PRESET, ACCEL_G_PER_LSB, GYRO_DPS_PER_LSB } from '@/constants/muse';
 import { getBleManager } from './bleManager';
+import { museSimulator } from './museSimulator';
 import { base64ToBytes, decodeEegPacket, decodeBattery, decodeMotion } from './museDecoder';
 import { encodeCommand, CMD_HALT, CMD_RESUME } from './museCommands';
 import { dspEngine } from '@/dsp/dspEngine';
@@ -26,6 +28,8 @@ class MuseClient {
   private isConnected: boolean = false;
 
   async scan(timeoutMs: number = 10000): Promise<void> {
+    if (Platform.OS === 'web') return;
+
     const store = useMuseStore.getState();
     store.setStatus('scanning');
 
@@ -135,10 +139,30 @@ class MuseClient {
     }
   }
 
+  async connectSimulator(): Promise<void> {
+    const store = useMuseStore.getState();
+    store.setStatus('streaming');
+    dspEngine.start();
+    museSimulator.start();
+    store.setDevice({ id: 'sim-1', name: 'Muse Simulator', rssi: 0 });
+    this.isConnected = true;
+  }
+
   async disconnect(): Promise<void> {
+    const store = useMuseStore.getState();
+
+    // Simulator
+    if (museSimulator.isRunning()) {
+      museSimulator.stop();
+      dspEngine.stop();
+      store.reset();
+      store.setStatus('idle');
+      this.isConnected = false;
+      return;
+    }
+
     if (!this.device || !this.isConnected) return;
 
-    const store = useMuseStore.getState();
     store.setStatus('disconnecting');
 
     dspEngine.stop();
