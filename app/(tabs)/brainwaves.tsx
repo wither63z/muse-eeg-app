@@ -14,7 +14,7 @@ export default function BrainwavesScreen() {
   return (
     <View style={styles.container}>
       <View style={styles.controls}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.controlRow}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.controlRow}>
           <Text style={styles.controlLabel}>Canal:</Text>
           {CHANNELS.map((ch) => (
             <TouchableOpacity

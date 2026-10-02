@@ -36,33 +36,34 @@ export function ConnectionCard() {
     await museClient.disconnect();
   };
 
+  const handleConnectHardware = async () => {
+    // Si es web, intenta conectar vía WebBluetooth
+    await museClient.connect('web-ble');
+  };
+
   const isScanning = status === 'scanning';
   const isStreaming = status === 'streaming';
 
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.title}>Conexión</Text>
+        <Text style={styles.title}>Conexión Muse</Text>
         <View style={[styles.statusBadge, isStreaming && styles.statusBadgeActive]}>
-          <Text style={styles.statusText}>
-            {STATUS_LABELS[status] || status}
-          </Text>
+          <Text style={styles.statusText}>{STATUS_LABELS[status] || 'Desconocido'}</Text>
         </View>
       </View>
-
-      {errorMessage && (
-        <Text style={styles.errorText}>{errorMessage}</Text>
-      )}
-
+      {errorMessage && <Text style={styles.errorText}>{errorMessage}</Text>}
       <View style={styles.buttonRow}>
         {!isStreaming ? (
           Platform.OS === 'web' ? (
-            <TouchableOpacity
-              style={styles.button}
-              onPress={() => museClient.connectSimulator()}
-            >
-              <Text style={styles.buttonText}>Conectar simulador</Text>
-            </TouchableOpacity>
+            <>
+              <TouchableOpacity style={styles.button} onPress={handleConnectHardware}>
+                <Text style={styles.buttonText}>Conectar Muse Real</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.button} onPress={() => museClient.connectSimulator()}>
+                <Text style={styles.buttonText}>Simulador</Text>
+              </TouchableOpacity>
+            </>
           ) : (
             <TouchableOpacity
               style={[styles.button, isScanning && styles.buttonDisabled]}

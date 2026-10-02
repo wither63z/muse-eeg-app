@@ -18,7 +18,7 @@ export default function RawEegScreen() {
   return (
     <View style={styles.container}>
       <View style={styles.controls}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.controlRow}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.controlRow}>
           <Text style={styles.controlLabel}>Ventana:</Text>
           {WINDOWS.map((w) => (
             <TouchableOpacity
@@ -33,7 +33,7 @@ export default function RawEegScreen() {
           ))}
         </ScrollView>
 
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.controlRow}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.controlRow}>
           <Text style={styles.controlLabel}>µV/div:</Text>
           {UV_PER_DIVS.map((uv) => (
             <TouchableOpacity

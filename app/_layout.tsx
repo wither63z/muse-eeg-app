@@ -4,9 +4,11 @@ import { useEffect } from 'react';
 import * as recordingsRepo from '@/recording/recordingsRepo';
 import { useMuseStore } from '@/store/useMuseStore';
 
+import { RecordingMeta } from '@/types/muse';
+
 export default function RootLayout() {
   useEffect(() => {
-    recordingsRepo.list().then((recordings) => {
+    recordingsRepo.list().then((recordings: RecordingMeta[]) => {
       useMuseStore.getState().setRecordings(recordings);
     });
   }, []);

@@ -1,4 +1,4 @@
-import { File, Directory, Paths } from 'expo-file-system';
+import { Platform } from 'react-native';
 import { RecordingMeta, TimedSample, BandPowerFrame, ChannelMap, FitLevel, Vec3 } from '@/types/muse';
 import { EEG_CHANNELS } from '@/types/muse';
 import { MM_CSV_HEADER, formatRow, makeFileName, RowState } from './csvFormat';
@@ -15,7 +15,9 @@ const ROW_COUNT_INTERVAL_MS = 1000; // 1 s
  */
 export interface RecordingSink {
   write(rows: string[]): Promise<void>;
-  close(): Promise<string>;
+  close(meta: RecordingMeta): Promise<string>;
+  getTotalRows(): number;
+  readonly dir: string;
 }
 
 /**
@@ -23,13 +25,17 @@ export interface RecordingSink {
  * expo-file-system de SDK 51+ no permite append, de ahí los segmentos.
  */
 class SegmentedSink implements RecordingSink {
-  private dir: Directory;
+  public readonly dir: string;
   private partNumber: number = 0;
   private currentRows: string[] = [];
   private totalRows: number = 0;
 
-  constructor(dir: Directory) {
+  constructor(dir: string) {
     this.dir = dir;
+  }
+
+  getTotalRows(): number {
+    return this.totalRows;
   }
 
   async write(rows: string[]): Promise<void> {
@@ -45,33 +51,50 @@ class SegmentedSink implements RecordingSink {
   async flush(): Promise<void> {
     if (this.currentRows.length === 0) return;
 
+    const FileSystem = require('expo-file-system') as typeof import('expo-file-system');
+
     this.partNumber++;
-    const partFile = new File(this.dir, `part-${String(this.partNumber).padStart(4, '0')}.csv`);
-    partFile.create({ overwrite: true });
-    partFile.write(this.currentRows.join('\n') + '\n');
+    const partFileUri = `${this.dir}/part-${String(this.partNumber).padStart(4, '0')}.csv`;
+    await FileSystem.writeAsStringAsync(partFileUri, this.currentRows.join('\n') + '\n');
 
     this.currentRows = [];
   }
 
-  async close(): Promise<string> {
+  async close(meta: RecordingMeta): Promise<string> {
     await this.flush();
 
-    // Escribir meta.json
-    const meta: RecordingMeta = {
-      id: this.dir.name || '',
-      fileName: makeFileName(new Date()),
-      startedAtMs: Date.now(),
-      durationMs: 0,
-      rowCount: this.totalRows,
-      sizeBytes: 0,
-      uri: this.dir.uri,
-    };
+    const FileSystem = require('expo-file-system') as typeof import('expo-file-system');
 
-    const metaFile = new File(this.dir, 'meta.json');
-    metaFile.create({ overwrite: true });
-    metaFile.write(JSON.stringify(meta));
+    const metaUri = `${this.dir}/meta.json`;
+    await FileSystem.writeAsStringAsync(metaUri, JSON.stringify(meta));
 
-    return this.dir.uri;
+    return this.dir;
+  }
+}
+
+/**
+ * Implementación en memoria para web.
+ */
+class WebSink implements RecordingSink {
+  public readonly dir: string;
+  private rows: string[] = [];
+
+  constructor(id: string) {
+    this.dir = `web-session-${id}`;
+  }
+
+  async write(rows: string[]): Promise<void> {
+    this.rows.push(...rows);
+  }
+
+  getTotalRows(): number {
+    return this.rows.length;
+  }
+
+  async close(meta: RecordingMeta): Promise<string> {
+    const { saveWebSession } = require('./recordingsRepo.web');
+    saveWebSession(meta.id, meta, this.rows);
+    return this.dir;
   }
 }
 
@@ -101,23 +124,33 @@ class Recorder {
   private marker: string | null = null;
   private pendingRows: string[] = [];
 
-  async start(): Promise<void> {
+  async start(injectedSink?: RecordingSink): Promise<void> {
     const store = useMuseStore.getState();
     if (store.status !== 'streaming') {
       throw new Error('No se puede grabar: no hay conexión activa');
     }
 
-    const id = Date.now().toString(36);
-    const dir = new Directory(Paths.document, 'recordings', id);
-    dir.create({ intermediates: true });
+    if (injectedSink) {
+      this.sink = injectedSink;
+    } else if (Platform.OS === 'web') {
+      const id = Date.now().toString(36);
+      this.sink = new WebSink(id);
+    } else {
+      const FileSystem = require('expo-file-system') as typeof import('expo-file-system');
+      const id = Date.now().toString(36);
+      const dirUri = `${(FileSystem as any).documentDirectory}recordings/${id}`;
+      await FileSystem.makeDirectoryAsync(dirUri, { intermediates: true });
+      this.sink = new SegmentedSink(dirUri);
+    }
 
-    this.sink = new SegmentedSink(dir);
     this.recording = true;
     this.startTime = Date.now();
     this.pendingRows = [];
 
     // Escribir cabecera
-    await this.sink.write([MM_CSV_HEADER]);
+    if (this.sink && Platform.OS !== 'web') {
+      await this.sink.write([MM_CSV_HEADER]);
+    }
 
     // Suscribirse a muestras crudas
     this.unsubscribeRaw = dspEngine.onRawSample((sample) => {
@@ -201,13 +234,24 @@ class Recorder {
       this.unsubscribeBands = null;
     }
 
+    const totalRows = this.sink.getTotalRows() + this.pendingRows.length;
+    const sinkDir = this.sink.dir;
+
     // Flush final
     if (this.pendingRows.length > 0) {
       await this.sink.write(this.pendingRows);
       this.pendingRows = [];
     }
 
-    const uri = await this.sink.close();
+    const uri = await this.sink.close({
+      id: sinkDir.split('/').pop() || '',
+      fileName: makeFileName(new Date(this.startTime)),
+      startedAtMs: this.startTime,
+      durationMs: Date.now() - this.startTime,
+      rowCount: totalRows,
+      sizeBytes: 0, // Se calculará al exportar
+      uri: sinkDir,
+    });
     this.sink = null;
 
     const store = useMuseStore.getState();
