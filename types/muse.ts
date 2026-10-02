@@ -66,10 +66,18 @@ export interface MotionSample {
 export type AccelerometerPacket = MotionSample; // unidades: g
 export type GyroscopePacket = MotionSample;     // unidades: °/s
 
+export interface PpgSample {
+  sequence: number;
+  /** 3 muestras por paquete. */
+  samples: [number, number, number];
+  receivedAtMs: number;
+}
+
 export interface Telemetry {
   battery: BatteryReading | null;
   accel: (Vec3 & { tMs: number }) | null;  // última muestra
   gyro: (Vec3 & { tMs: number }) | null;
+  ppg: PpgSample | null;
 }
 
 // ───────────── Conexión ─────────────

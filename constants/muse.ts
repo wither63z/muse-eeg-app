@@ -6,6 +6,7 @@ export const MUSE_CHAR = {
   GYRO:    base('0009'),
   ACCEL:   base('000a'),
   BATTERY: base('000b'),   // telemetría
+  PPG:     base('000c'),
   TP9:     base('0003'),
   AF7:     base('0004'),
   AF8:     base('0005'),
