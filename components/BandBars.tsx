@@ -1,8 +1,9 @@
-import React, { useEffect } from 'react';
-import { View, Text, StyleSheet } from 'react-native';
+import React, { useEffect, memo } from 'react';
+import { View, Text, StyleSheet, LayoutChangeEvent } from 'react-native';
 import Animated, { useSharedValue, useAnimatedStyle, withTiming } from 'react-native-reanimated';
 import { BandPowerFrame, EegChannel, BandMap } from '@/types/muse';
 import { BAND_NAMES } from '@/types/muse';
+import { theme } from '@/constants/Theme';
 
 interface BandBarsProps {
   frame: BandPowerFrame | null;
@@ -10,85 +11,15 @@ interface BandBarsProps {
   mode: 'absolute' | 'relative';
 }
 
-const BAND_COLORS: Record<string, string> = {
-  delta: '#8b5cf6',
-  theta: '#3b82f6',
-  alpha: '#22c55e',
-  beta: '#f59e0b',
-  gamma: '#ef4444',
-};
-
-const BAND_LABELS: Record<string, string> = {
-  delta: 'δ',
-  theta: 'θ',
-  alpha: 'α',
-  beta: 'β',
-  gamma: 'γ',
-};
-
-export function BandBars({ frame, channel, mode }: BandBarsProps) {
-  if (!frame) {
-    return (
-      <View style={styles.emptyContainer}>
-        <Text style={styles.emptyText}>Sin datos de bandas</Text>
-      </View>
-    );
-  }
-
-  const values = getValues(frame, channel, mode);
-
-  return (
-    <View style={styles.container}>
-      {BAND_NAMES.map((band) => (
-        <BandBar
-          key={band}
-          value={values[band]}
-          color={BAND_COLORS[band]}
-          label={BAND_LABELS[band]}
-          mode={mode}
-        />
-      ))}
-    </View>
-  );
+interface BandValues {
+  name: typeof BAND_NAMES[number];
+  value: number;
+  displayValue: string;
 }
 
-function BandBar({ value, color, label, mode }: { value: number; color: string; label: string; mode: 'absolute' | 'relative' }) {
-  const heightPercent = mode === 'relative'
-    ? value * 100
-    : Math.max(0, Math.min(100, ((value + 2) / 4) * 100));
+function getBandValues(frame: BandPowerFrame, channel: EegChannel | 'avg', mode: 'absolute' | 'relative'): BandValues[] {
+  let values: BandMap<number>;
 
-  const animatedHeight = useSharedValue(heightPercent);
-
-  useEffect(() => {
-    animatedHeight.value = withTiming(heightPercent, { duration: 100 });
-  }, [heightPercent, animatedHeight]);
-
-  const animatedStyle = useAnimatedStyle(() => ({
-    height: `${animatedHeight.value}%`,
-  }));
-
-  return (
-    <View style={styles.barContainer}>
-      <Text style={styles.valueText}>{value.toFixed(2)}</Text>
-      <View style={styles.barBackground}>
-        <Animated.View
-          style={[
-            styles.barFill,
-            { backgroundColor: color },
-            animatedStyle,
-          ]}
-        />
-      </View>
-      <Text style={styles.bandLabel}>{label}</Text>
-    </View>
-  );
-}
-
-function getValues(
-  frame: BandPowerFrame,
-  channel: EegChannel | 'avg',
-  mode: 'absolute' | 'relative',
-): BandMap<number> {
   if (channel === 'avg') {
     const result: BandMap<number> = { delta: 0, theta: 0, alpha: 0, beta: 0, gamma: 0 };
     for (const band of BAND_NAMES) {
@@ -108,22 +39,125 @@ function getValues(
         result[band] = Math.log10(Math.max(avgLinear, 1e-12));
       }
     }
-    return result;
+    values = result;
+  } else {
+    values = mode === 'relative' ? frame.relative[channel] : frame.absoluteLog[channel];
   }
 
+  return BAND_NAMES.map((name) => ({
+    name,
+    value: values[name],
+    displayValue: formatBandValue(values[name], mode),
+  }));
+}
+
+function formatBandValue(value: number, mode: 'absolute' | 'relative'): string {
   if (mode === 'relative') {
-    return frame.relative[channel];
+    return `${(value * 100).toFixed(1)}%`;
   }
-  return frame.absoluteLog[channel];
+  // Absolute: log10 scale, show as is
+  return value.toFixed(2);
+}
+
+function BandBar({ item, mode }: { item: BandValues; mode: 'absolute' | 'relative' }) {
+  const animatedWidth = useSharedValue(0);
+  const color = theme.colors.bands[item.name];
+  const borderRadius = theme.borderRadius.card;
+
+  // Normaliza para visualización: relativo 0-1, absoluto mapeado a porcentaje visual
+  const fillRatio = mode === 'relative'
+    ? Math.max(0, Math.min(1, item.value))
+    : Math.max(0, Math.min(1, ((item.value + 2) / 4)));
+
+  useEffect(() => {
+    animatedWidth.value = withTiming(fillRatio, { duration: 120 });
+  }, [fillRatio, animatedWidth]);
+
+  const animatedStyle = useAnimatedStyle(() => ({
+    width: `${animatedWidth.value * 100}%`,
+  }));
+
+  return (
+    <View style={styles.card}>
+      <View style={styles.headerRow}>
+        <View style={[styles.dot, { backgroundColor: color }]} />
+        <Text style={styles.name}>{item.name.toUpperCase()}</Text>
+        <Text style={styles.value}>{item.displayValue}</Text>
+      </View>
+      <View style={styles.barTrack}>
+        <Animated.View style={[styles.barFill, { backgroundColor: color }, animatedStyle]} />
+      </View>
+    </View>
+  );
+}
+
+const MemoizedBandBar = memo(BandBar);
+
+export function BandBars({ frame, channel, mode }: BandBarsProps) {
+  if (!frame) {
+    return (
+      <View style={styles.emptyContainer}>
+        <Text style={styles.emptyText}>Sin datos de bandas</Text>
+      </View>
+    );
+  }
+
+  const items = getBandValues(frame, channel, mode);
+
+  return (
+    <View style={styles.container}>
+      {items.map((item) => (
+        <MemoizedBandBar key={item.name} item={item} mode={mode} />
+      ))}
+    </View>
+  );
 }
 
 const styles = StyleSheet.create({
   container: {
+    padding: theme.spacing.md,
+    gap: theme.spacing.sm,
+  },
+  card: {
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.borderRadius.card,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    padding: theme.spacing.sm,
+  },
+  headerRow: {
     flexDirection: 'row',
-    justifyContent: 'space-around',
-    alignItems: 'flex-end',
-    height: 200,
-    paddingHorizontal: 16,
+    alignItems: 'center',
+    marginBottom: theme.spacing.xs,
+  },
+  dot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    marginRight: theme.spacing.sm,
+  },
+  name: {
+    color: theme.colors.text,
+    fontSize: 11,
+    fontWeight: '600',
+    letterSpacing: 0.5,
+    flex: 1,
+  },
+  value: {
+    color: theme.colors.text,
+    fontSize: 13,
+    fontWeight: '500',
+    fontVariant: ['tabular-nums'],
+  },
+  barTrack: {
+    height: 4,
+    backgroundColor: theme.colors.border,
+    borderRadius: theme.borderRadius.sm,
+    overflow: 'hidden',
+  },
+  barFill: {
+    height: '100%',
+    borderRadius: theme.borderRadius.sm,
   },
   emptyContainer: {
     height: 200,
@@ -131,34 +165,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   emptyText: {
-    color: '#64748b',
+    color: theme.colors.secondaryText,
     fontSize: 14,
-  },
-  barContainer: {
-    flex: 1,
-    alignItems: 'center',
-    marginHorizontal: 4,
-  },
-  valueText: {
-    color: '#f1f5f9',
-    fontSize: 11,
-    marginBottom: 4,
-  },
-  barBackground: {
-    flex: 1,
-    width: '100%',
-    backgroundColor: '#1e293b',
-    borderRadius: 4,
-    overflow: 'hidden',
-    justifyContent: 'flex-end',
-  },
-  barFill: {
-    width: '100%',
-    borderRadius: 4,
-  },
-  bandLabel: {
-    color: '#94a3b8',
-    fontSize: 16,
-    marginTop: 6,
   },
 });

@@ -1,21 +1,42 @@
-import React from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Alert } from 'react-native';
+import React, { useState } from 'react';
+import { View, Text, TouchableOpacity, StyleSheet, Alert, Platform } from 'react-native';
 import { RecordingMeta } from '@/types/muse';
+import { theme } from '@/constants/Theme';
 
 interface RecordingRowProps {
   meta: RecordingMeta;
   onShare: (id: string) => void;
-  onDelete: (id: string) => void;
+  onDelete: (id: string) => void | Promise<void>;
 }
 
 export function RecordingRow({ meta, onShare, onDelete }: RecordingRowProps) {
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const performDelete = async () => {
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await onDelete(meta.id);
+    } catch (error) {
+      setDeleteError(error instanceof Error ? error.message : 'No se pudo eliminar la grabación');
+    } finally {
+      setDeleting(false);
+    }
+  };
   const handleDelete = () => {
+    if (deleting) return;
+    if (Platform.OS === 'web') {
+      if (typeof window !== 'undefined' && window.confirm(`¿Eliminar ${meta.fileName}?`)) {
+        void performDelete();
+      }
+      return;
+    }
     Alert.alert(
       'Eliminar grabación',
       `¿Eliminar ${meta.fileName}?`,
       [
         { text: 'Cancelar', style: 'cancel' },
-        { text: 'Eliminar', style: 'destructive', onPress: () => onDelete(meta.id) },
+        { text: 'Eliminar', style: 'destructive', onPress: () => { void performDelete(); } },
       ],
     );
   };
@@ -33,26 +54,31 @@ export function RecordingRow({ meta, onShare, onDelete }: RecordingRowProps) {
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   };
 
-  const formatDate = (ms: number) => {
-    const d = new Date(ms);
-    return d.toLocaleString();
-  };
-
   return (
     <View style={styles.container}>
       <View style={styles.info}>
-        <Text style={styles.fileName}>{meta.fileName}</Text>
-        <Text style={styles.meta}>
-          {formatDate(meta.startedAtMs)} · {formatDuration(meta.durationMs)} · {formatSize(meta.sizeBytes)}
+        <Text style={styles.fileName}>{meta.fileName.replace('mindMonitor_', '').replace('.csv', '')}</Text>
+        <Text style={[styles.meta, theme.typography]}>
+          {formatDuration(meta.durationMs)} · {formatSize(meta.sizeBytes)}
         </Text>
-        <Text style={styles.rows}>{meta.rowCount} filas</Text>
+        {deleteError && <Text style={{ color: theme.colors.error }}>{deleteError}</Text>}
       </View>
       <View style={styles.actions}>
-        <TouchableOpacity style={styles.button} onPress={() => onShare(meta.id)}>
-          <Text style={styles.buttonText}>Compartir</Text>
+        <TouchableOpacity
+          style={styles.iconButton}
+          onPress={() => onShare(meta.id)}
+          activeOpacity={0.7}
+        >
+          <Text style={styles.iconText}>📤</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={[styles.button, styles.deleteButton]} onPress={handleDelete}>
-          <Text style={styles.buttonText}>Eliminar</Text>
+        <TouchableOpacity
+          style={[styles.iconButton, styles.deleteButton]}
+          onPress={handleDelete}
+          disabled={deleting}
+          accessibilityLabel="Eliminar grabación"
+          activeOpacity={0.7}
+        >
+          <Text style={styles.iconText}>🗑️</Text>
         </TouchableOpacity>
       </View>
     </View>
@@ -64,45 +90,47 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    padding: 12,
-    backgroundColor: '#1e293b',
-    borderRadius: 8,
-    marginVertical: 4,
+    padding: theme.spacing.md,
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.borderRadius.card,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    marginBottom: theme.spacing.sm,
+    shadowColor: theme.colors.bands.gamma,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 6,
+    elevation: 2,
   },
   info: {
     flex: 1,
   },
   fileName: {
-    color: '#f1f5f9',
+    color: theme.colors.text,
     fontSize: 14,
     fontWeight: '600',
+    marginBottom: theme.spacing.xs,
   },
   meta: {
-    color: '#94a3b8',
+    color: theme.colors.secondaryText,
     fontSize: 12,
-    marginTop: 2,
-  },
-  rows: {
-    color: '#64748b',
-    fontSize: 11,
-    marginTop: 2,
+    fontVariant: ['tabular-nums'],
   },
   actions: {
     flexDirection: 'row',
-    gap: 8,
+    gap: theme.spacing.sm,
   },
-  button: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    backgroundColor: '#3b82f6',
-    borderRadius: 6,
+  iconButton: {
+    padding: theme.spacing.sm,
+    borderRadius: theme.borderRadius.sm,
+    backgroundColor: theme.colors.border,
   },
   deleteButton: {
-    backgroundColor: '#ef4444',
+    borderColor: theme.colors.error,
+    borderWidth: 1,
+    backgroundColor: 'rgba(248, 81, 73, 0.1)',
   },
-  buttonText: {
-    color: '#fff',
-    fontSize: 12,
-    fontWeight: '600',
+  iconText: {
+    fontSize: 18,
   },
 });

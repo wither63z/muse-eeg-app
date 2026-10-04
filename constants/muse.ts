@@ -6,7 +6,7 @@ export const MUSE_CHAR = {
   GYRO:    base('0009'),
   ACCEL:   base('000a'),
   BATTERY: base('000b'),   // telemetría
-  PPG:     base('000c'),
+  PPG:     base('0010'), // infrarrojo Muse 2/S clásico; no 000c
   TP9:     base('0003'),
   AF7:     base('0004'),
   AF8:     base('0005'),
@@ -18,6 +18,7 @@ export const EEG_CHAR_BY_CHANNEL: Record<'TP9'|'AF7'|'AF8'|'TP10', string> = {
 };
 
 export const SAMPLE_RATE_HZ = 256;
+export const PPG_SAMPLE_RATE_HZ = 64;   // PPG del Muse 2 ≈ 64 Hz
 export const SAMPLES_PER_EEG_PACKET = 12;
 export const EEG_UV_PER_LSB = 0.48828125;    // 2000 µV / 4096
 export const EEG_ADC_MIDPOINT = 2048;
@@ -27,6 +28,7 @@ export const BATTERY_PERCENT_DIVISOR = 512;  // raw / 512 = %
 export const BATTERY_MV_PER_LSB = 2.2;
 
 export const MUSE_NAME_PREFIX = 'Muse';
+export const MUSE_PPG_PRESET = 'p50'; // EEG + PPG, firmware clásico
 export const MUSE_PRESET = 'p21';            // EEG 4ch + telemetría + IMU (configurable)
 
 export const BANDS = [

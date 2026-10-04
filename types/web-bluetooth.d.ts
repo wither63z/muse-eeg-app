@@ -17,6 +17,7 @@ interface BluetoothRemoteGATTService {
   device: BluetoothDevice;
   uuid: string;
   isPrimary: boolean;
+  getCharacteristics(): Promise<BluetoothRemoteGATTCharacteristic[]>;
   getCharacteristic(characteristic: string): Promise<BluetoothRemoteGATTCharacteristic>;
 }
 

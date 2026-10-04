@@ -1,7 +1,8 @@
-import { EegPacket, EegChannel, TimedSample, BandPowerFrame, BandMap, ChannelMap, FitCheck } from '@/types/muse';
-import { FFT_SIZE, SCOPE_HISTORY_SECONDS, SAMPLE_RATE_HZ, BANDS, BAND_UPDATE_HZ, FIT_UPDATE_HZ, MAINS_HZ } from '@/constants/muse';
+import { EegPacket, EegChannel, TimedSample, BandPowerFrame, BandMap, ChannelMap, FitCheck, PpgSample } from '@/types/muse';
+import { FFT_SIZE, SCOPE_HISTORY_SECONDS, SAMPLE_RATE_HZ, BANDS, BAND_UPDATE_HZ, FIT_UPDATE_HZ, MAINS_HZ, PPG_SAMPLE_RATE_HZ } from '@/constants/muse';
 import { RingBuffer } from './ringBuffer';
 import { Fft, hannWindow } from './fft';
+import { estimateHeartRate } from './heartRate';
 import { computeFit } from './fitCheck';
 import { useMuseStore } from '@/store/useMuseStore';
 
@@ -23,11 +24,15 @@ class DspEngine {
   private fft: Fft;
   private window: Float32Array;
   private sumW2: number;
+  private xBuf: Float32Array;
+  private imBuf: Float32Array;
+  private psdBuf: Float32Array;
+  private fillBuf: Float32Array;
   private bandTimer: ReturnType<typeof setInterval> | null = null;
   private fitTimer: ReturnType<typeof setInterval> | null = null;
   private rawSampleCallbacks: Set<(s: TimedSample) => void> = new Set();
   private bandCallbacks: Set<(f: BandPowerFrame) => void> = new Set();
-  private lastFit: { fit: FitCheck; headbandOn: boolean } | null = null;
+  private lastFit: ReturnType<typeof computeFit> | null = null;
   private pendingCounters: ChannelMap<number> = { TP9: 0, AF7: 0, AF8: 0, TP10: 0 };
   private highPassState: Map<EegChannel, { yPrev: number; xPrev: number }> = new Map();
   private packetsReceived: ChannelMap<number> = { TP9: 0, AF7: 0, AF8: 0, TP10: 0 };
@@ -36,10 +41,21 @@ class DspEngine {
   private sequenceUnwrappers: Map<EegChannel, { lastSeq: number | null; wraps: number; lastAbsPacket: number | null }> = new Map();
   private lastValidSample: Map<EegChannel, number> = new Map();
 
+  // PPG (ritmo cardíaco)
+  private ppgBuf: RingBuffer;
+  private ppgSampleCount = 0;
+  private lastPpgReceivedAtMs = 0;
+  private ppgLastSequence: number | null = null;
+  private ppgAnalysisWindow = new Float32Array(PPG_SAMPLE_RATE_HZ * 8);
+
   constructor() {
     this.fft = new Fft(FFT_SIZE);
     this.window = hannWindow(FFT_SIZE);
     this.sumW2 = this.window.reduce((sum, w) => sum + w * w, 0);
+    this.xBuf = new Float32Array(FFT_SIZE);
+    this.imBuf = new Float32Array(FFT_SIZE);
+    this.psdBuf = new Float32Array(FFT_SIZE / 2 + 1);
+    this.fillBuf = new Float32Array(60 * 12);
 
     for (const ch of EEG_CHANNELS) {
       this.fftBuf.set(ch, new RingBuffer(FFT_SIZE));
@@ -47,6 +63,9 @@ class DspEngine {
       this.highPassState.set(ch, { yPrev: 0, xPrev: 0 });
       this.sequenceUnwrappers.set(ch, { lastSeq: null, wraps: 0, lastAbsPacket: null });
     }
+
+    // PPG ~64 Hz, guardamos 10 s de historial
+    this.ppgBuf = new RingBuffer(PPG_SAMPLE_RATE_HZ * SCOPE_HISTORY_SECONDS);
   }
 
   pushEeg(packet: EegPacket): void {
@@ -101,13 +120,41 @@ class DspEngine {
     }
   }
 
+  pushPpg(packet: PpgSample): void {
+    // A missing/duplicate packet must not compress the optical time axis.
+    if (this.ppgLastSequence !== null) {
+      const delta = (packet.sequence - this.ppgLastSequence + 65536) % 65536;
+      if (delta === 0 || delta > 32768) return;
+      if (delta !== 1 || packet.receivedAtMs - this.lastPpgReceivedAtMs > 1000) {
+        this.ppgBuf.clear();
+        this.ppgSampleCount = 0;
+        useMuseStore.getState().setHeartRate(null);
+      }
+    }
+    this.ppgLastSequence = packet.sequence;
+    this.lastPpgReceivedAtMs = packet.receivedAtMs;
+    for (const value of packet.samples) this.ppgBuf.push(value);
+    this.ppgSampleCount += packet.samples.length;
+    if (this.ppgSampleCount >= PPG_SAMPLE_RATE_HZ) {
+      this.ppgSampleCount %= PPG_SAMPLE_RATE_HZ;
+      const count = this.ppgBuf.copyLast(this.ppgAnalysisWindow.length, this.ppgAnalysisWindow);
+      useMuseStore.getState().setHeartRate(count === this.ppgAnalysisWindow.length
+        ? estimateHeartRate(this.ppgAnalysisWindow) : null);
+    }
+  }
+
+  getPpgWindow(seconds: number, out: Float32Array): number {
+    const n = Math.min(seconds * PPG_SAMPLE_RATE_HZ, out.length);
+    return this.ppgBuf.copyLast(n, out);
+  }
+
   private trackSequence(channel: EegChannel, sequence: number): number {
     const unwrapper = this.sequenceUnwrappers.get(channel);
     if (!unwrapper) return 0;
 
     if (unwrapper.lastSeq === null) {
       unwrapper.lastSeq = sequence;
-      unwrapper.lastAbsPacket = 0;
+      unwrapper.lastAbsPacket = sequence;
       this.packetsReceived[channel]++;
       return 0;
     }
@@ -132,6 +179,23 @@ class DspEngine {
   }
 
   start(): void {
+    this.stop();
+    this.ppgBuf.clear();
+    this.ppgLastSequence = null;
+    this.lastFit = null;
+    this.pendingCounters = { TP9: 0, AF7: 0, AF8: 0, TP10: 0 };
+    this.ppgSampleCount = 0;
+    this.lastPpgReceivedAtMs = 0;
+    for (const ch of EEG_CHANNELS) {
+      this.fftBuf.get(ch)?.clear();
+      this.scopeBuf.get(ch)?.clear();
+      this.sequenceUnwrappers.set(ch, { lastSeq: null, wraps: 0, lastAbsPacket: null });
+      this.lastValidSample.delete(ch);
+      this.packetsReceived[ch] = 0;
+      this.packetsDropped[ch] = 0;
+    }
+    this.lastStatsTime = 0;
+    useMuseStore.getState().setHeartRate(null);
     // Timer de bandas a 10 Hz
     this.bandTimer = setInterval(() => {
       this.computeBands();
@@ -169,6 +233,11 @@ class DspEngine {
   private updateStats(): void {
     const store = useMuseStore.getState();
     const now = Date.now();
+    if (now - this.lastPpgReceivedAtMs > 3000) {
+      store.setHeartRate(null);
+      this.ppgBuf.clear();
+      this.ppgLastSequence = null;
+    }
     const elapsed = (now - this.lastStatsTime) / 1000;
 
     if (this.lastStatsTime === 0 || elapsed < 1) {
@@ -183,8 +252,7 @@ class DspEngine {
     const packetsInInterval = currentTotal - lastTotal;
 
     // Tasa efectiva: paquetes por segundo / paquetes esperados por segundo * 256 Hz
-    const expectedPerSecond = 4 * 256; // 4 canales * 256 Hz
-    const effectiveRateHz = (packetsInInterval / expectedPerSecond) * 256;
+    const effectiveRateHz = packetsInInterval * 12 / (4 * elapsed);
 
     this.lastStatsTime = now;
     this.lastPacketsReceived = { ...this.packetsReceived };
@@ -312,6 +380,10 @@ class DspEngine {
     // Publicar al store
     useMuseStore.getState().setFit(result.fit);
     useMuseStore.setState({ headbandOn: result.headbandOn });
+  }
+
+  getFitDiagnostics() {
+    return this.lastFit?.diagnostics ?? null;
   }
 
   getLastFit(): { fit: FitCheck; headbandOn: boolean } | null {

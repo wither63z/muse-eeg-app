@@ -1,5 +1,5 @@
 import { toByteArray } from 'base64-js';
-import { EegChannel, EegPacket, BatteryReading, MotionSample, Vec3 } from '@/types/muse';
+import { EegChannel, EegPacket, BatteryReading, MotionSample, Vec3, PpgSample } from '@/types/muse';
 import { EEG_UV_PER_LSB, EEG_ADC_MIDPOINT, ACCEL_G_PER_LSB, GYRO_DPS_PER_LSB, SAMPLE_RATE_HZ, SAMPLES_PER_EEG_PACKET } from '@/constants/muse';
 
 /**
@@ -93,17 +93,18 @@ export function decodeMotion(bytes: Uint8Array, scale: number): MotionSample {
   return { sequence, samples, receivedAtMs: Date.now() };
 }
 
-/**
- * Desenvuelve secuencia y calcula timestamps absolutos.
- * 
- * Guarda lastSeq, wraps, anchorMs (del primer paquete) y firstAbsIndex.
- * Si seq < lastSeq - 32768 → wraps++.
- * absPacket = wraps * 65536 + seq.
- * gap = absPacket - lastAbsPacket - 1; si gap > 0 hay paquetes perdidos.
- * Para la muestra i del paquete: tMs = anchorMs + ((absPacket - firstAbs) * 12 + i) * 1000 / 256.
- * Si gap > 0 && gap < 50, se reportan gap*12 muestras faltantes.
- * Si gap >= 50 se considera reconexión: resetear el unwrapper.
- */
+/** Muse 2/S clásico: secuencia BE de 16 bits + 6 muestras unsigned de 24 bits. */
+export function decodePpg(bytes: Uint8Array, receivedAtMs: number): PpgSample {
+  if (bytes.length !== 20) {
+    throw new Error(`PPG packet length ${bytes.length} != 20`);
+  }
+  const samples: number[] = [];
+  for (let offset = 2; offset < 20; offset += 3) {
+    samples.push(bytes[offset] * 65536 + bytes[offset + 1] * 256 + bytes[offset + 2]);
+  }
+  return { sequence: (bytes[0] << 8) | bytes[1], samples, receivedAtMs };
+}
+
 export class SequenceUnwrapper {
   private lastSeq: number | null = null;
   private wraps: number = 0;

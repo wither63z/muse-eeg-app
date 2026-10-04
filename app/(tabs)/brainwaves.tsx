@@ -3,6 +3,8 @@ import { View, Text, TouchableOpacity, StyleSheet, ScrollView } from 'react-nati
 import { BandBars } from '@/components/BandBars';
 import { useMuseStore } from '@/store/useMuseStore';
 import { EegChannel } from '@/types/muse';
+import { theme } from '@/constants/Theme';
+import { BentoCard } from '@/components/BentoCard';
 
 const CHANNELS: (EegChannel | 'avg')[] = ['TP9', 'AF7', 'AF8', 'TP10', 'avg'];
 
@@ -10,22 +12,29 @@ export default function BrainwavesScreen() {
   const bands = useMuseStore((s) => s.bands);
   const [channel, setChannel] = useState<EegChannel | 'avg'>('avg');
   const [mode, setMode] = useState<'absolute' | 'relative'>('relative');
+  const isSimulating = useMuseStore((s) => s.isSimulating);
 
   return (
     <View style={styles.container}>
+      {isSimulating && (
+        <View style={styles.simBanner}>
+          <Text style={styles.simText}>MODO SIMULADOR</Text>
+        </View>
+      )}
       <View style={styles.controls}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.controlRow}>
           <Text style={styles.controlLabel}>Canal:</Text>
           {CHANNELS.map((ch) => (
-            <TouchableOpacity
+            <BentoCard
               key={ch}
-              style={[styles.chip, channel === ch && styles.chipActive]}
+              active={channel === ch}
+              accent={channel === ch ? theme.colors.bands.beta : theme.colors.border}
               onPress={() => setChannel(ch)}
             >
               <Text style={[styles.chipText, channel === ch && styles.chipTextActive]}>
                 {ch === 'avg' ? 'Promedio' : ch}
               </Text>
-            </TouchableOpacity>
+            </BentoCard>
           ))}
         </ScrollView>
 
@@ -60,11 +69,11 @@ export default function BrainwavesScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0f172a',
+    backgroundColor: theme.colors.background,
   },
   controls: {
     padding: 8,
-    backgroundColor: '#1e293b',
+    backgroundColor: theme.colors.surface,
   },
   controlRow: {
     flexDirection: 'row',
@@ -72,29 +81,43 @@ const styles = StyleSheet.create({
     marginVertical: 4,
   },
   controlLabel: {
-    color: '#94a3b8',
+    color: theme.colors.secondaryText,
     fontSize: 12,
     marginRight: 8,
   },
   chip: {
     paddingHorizontal: 12,
     paddingVertical: 6,
-    backgroundColor: '#334155',
+    backgroundColor: theme.colors.border,
     borderRadius: 16,
     marginRight: 6,
   },
   chipActive: {
-    backgroundColor: '#3b82f6',
+    backgroundColor: theme.colors.bands.beta,
   },
   chipText: {
-    color: '#94a3b8',
+    color: theme.colors.secondaryText,
     fontSize: 12,
   },
   chipTextActive: {
-    color: '#fff',
+    color: theme.colors.text,
+    fontVariant: ['tabular-nums'] as const,
   },
   barsContainer: {
     flex: 1,
     justifyContent: 'center',
+  },
+  simBanner: {
+    backgroundColor: theme.colors.simulator,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    marginBottom: 8,
+  },
+  simText: {
+    color: theme.colors.background,
+    fontWeight: '700',
+    fontSize: 12,
+    textAlign: 'center',
+    letterSpacing: 0.5,
   },
 });

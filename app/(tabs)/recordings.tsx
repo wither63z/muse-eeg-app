@@ -4,6 +4,8 @@ import { RecordingRow } from '@/components/RecordingRow';
 import { useMuseStore } from '@/store/useMuseStore';
 import { recorder } from '@/recording/recorder';
 import * as recordingsRepo from '@/recording/recordingsRepo';
+import { theme } from '@/constants/Theme';
+import { GlowButton } from '@/components/GlowButton';
 
 export default function RecordingsScreen() {
   const status = useMuseStore((s) => s.status);
@@ -15,92 +17,75 @@ export default function RecordingsScreen() {
   const [elapsed, setElapsed] = useState(0);
 
   useEffect(() => {
-    if (!isRecording || !recordingStartedAtMs) return;
-
-    const interval = setInterval(() => {
-      setElapsed(Date.now() - recordingStartedAtMs);
-    }, 1000);
-
+    if (!isRecording || !recordingStartedAtMs) { setElapsed(0); return; }
+    const interval = setInterval(() => { setElapsed(Date.now() - recordingStartedAtMs); }, 1000);
     return () => clearInterval(interval);
   }, [isRecording, recordingStartedAtMs]);
 
-  const handleStart = async () => {
-    await recorder.start();
+  const formatTime = (ms: number) => {
+    const totalSeconds = Math.floor(ms / 1000);
+    const h = Math.floor(totalSeconds / 3600);
+    const m = Math.floor((totalSeconds % 3600) / 60);
+    const s = totalSeconds % 60;
+    const parts: string[] = [];
+    if (h > 0) parts.push(String(h));
+    parts.push(String(m).padStart(2, '0'));
+    parts.push(String(s).padStart(2, '0'));
+    return parts.join(':');
   };
 
+  const handleStart = async () => await recorder.start();
   const handleStop = async () => {
     await recorder.stop();
     const list = await recordingsRepo.list();
     useMuseStore.getState().setRecordings(list);
   };
-
-  const handleMarker = () => {
-    recorder.addMarker();
-  };
-
-  const handleShare = async (id: string) => {
-    await recordingsRepo.share(id);
-  };
-
+  const handleMarker = (label: string) => recorder.addMarker(label);
+  const handleShare = async (id: string) => await recordingsRepo.share(id);
   const handleDelete = async (id: string) => {
     await recordingsRepo.deleteRecording(id);
     const list = await recordingsRepo.list();
     useMuseStore.getState().setRecordings(list);
   };
 
-  const formatTime = (ms: number) => {
-    const totalSeconds = Math.floor(ms / 1000);
-    const minutes = Math.floor(totalSeconds / 60);
-    const seconds = totalSeconds % 60;
-    return `${minutes}:${String(seconds).padStart(2, '0')}`;
-  };
-
   const isStreaming = status === 'streaming';
 
   return (
-    <View style={styles.container}>
-      <View style={styles.controls}>
-        <TouchableOpacity
-          style={[
-            styles.recordButton,
-            !isStreaming && styles.recordButtonDisabled,
-            isRecording && styles.recordButtonStop,
-          ]}
-          onPress={isRecording ? handleStop : handleStart}
-          disabled={!isStreaming && !isRecording}
-        >
-          <Text style={styles.recordButtonText}>
-            {isRecording ? 'Detener' : 'Grabar'}
-          </Text>
-        </TouchableOpacity>
+    <View style={styles.screen}>
+      {/* Módulo de control superior */}
+      <GlowButton
+        label={isRecording ? `REC ${formatTime(elapsed)}` : 'Iniciar Grabación'}
+        onPress={isRecording ? handleStop : handleStart}
+        accent={isRecording ? theme.colors.simulator : theme.colors.bands.beta}
+        style={{ opacity: (!isStreaming && !isRecording) ? 0.5 : 1, width: '100%' }}
+      />
 
-        {isRecording && (
-          <View style={styles.recordingInfo}>
-            <View style={styles.recordingDot} />
-            <Text style={styles.recordingTime}>{formatTime(elapsed)}</Text>
-            <Text style={styles.recordingRows}>{recordingRowCount} filas</Text>
-          </View>
-        )}
-
-        {isRecording && (
-          <TouchableOpacity style={styles.markerButton} onPress={handleMarker}>
-            <Text style={styles.markerButtonText}>Marcador</Text>
-          </TouchableOpacity>
-        )}
+      {/* Marcadores horizontales */}
+      <View style={styles.markersRow}>
+        {['+M1', '+M2', '+M3'].map((label) => (
+          <GlowButton
+            key={label}
+            label={label}
+            onPress={() => handleMarker(label.slice(1))}
+            accent={theme.colors.bands.gamma}
+            style={{ flex: 1, marginHorizontal: theme.spacing.xs }}
+          />
+        ))}
       </View>
 
+      {/* Divisor + Título */}
+      <View style={styles.divider} />
+      <Text style={styles.sectionTitle}>HISTORIAL DE SESIONES LOCALES</Text>
+
+      {/* Lista */}
       <FlatList
         data={recordings}
         keyExtractor={(item) => item.id}
         renderItem={({ item }) => (
-          <RecordingRow
-            meta={item}
-            onShare={handleShare}
-            onDelete={handleDelete}
-          />
+          <RecordingRow meta={item} onShare={handleShare} onDelete={handleDelete} />
         )}
         ListEmptyComponent={
-          <View style={styles.emptyContainer}>
+          <View style={styles.empty}>
             <Text style={styles.emptyText}>No hay grabaciones todavía</Text>
           </View>
         }
@@ -111,76 +96,84 @@ export default function RecordingsScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
+  screen: {
     flex: 1,
-    backgroundColor: '#0f172a',
+    backgroundColor: theme.colors.background,
+    paddingHorizontal: 16,
+    paddingTop: theme.spacing.lg,
   },
-  controls: {
-    flexDirection: 'row',
+  mainButton: {
+    borderRadius: theme.borderRadius.pillMain,
+    paddingVertical: 20,
+    paddingHorizontal: 24,
+    backgroundColor: theme.colors.surface,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
     alignItems: 'center',
-    padding: 12,
-    backgroundColor: '#1e293b',
-    gap: 12,
+    shadowColor: theme.colors.bands.gamma,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    elevation: 3,
   },
-  recordButton: {
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-    backgroundColor: '#ef4444',
-    borderRadius: 8,
+  mainButtonRecording: {
+    backgroundColor: 'rgba(191,90,242,0.10)',
+    borderColor: '#BF5AF2',
   },
-  recordButtonDisabled: {
-    backgroundColor: '#475569',
-  },
-  recordButtonStop: {
-    backgroundColor: '#f59e0b',
-  },
-  recordButtonText: {
-    color: '#fff',
-    fontSize: 14,
+  mainButtonText: {
+    color: theme.colors.text,
+    fontSize: 20,
     fontWeight: '700',
+    letterSpacing: 1,
+    fontVariant: ['tabular-nums'] as const,
   },
-  recordingInfo: {
+  markersRow: {
     flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: theme.spacing.md,
+  },
+  markerPill: {
+    flex: 1,
+    paddingVertical: 10,
+    paddingHorizontal: theme.spacing.sm,
+    borderRadius: theme.borderRadius.card,
+    backgroundColor: theme.colors.surface,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
     alignItems: 'center',
-    gap: 8,
+    marginHorizontal: theme.spacing.xs,
+    shadowColor: '#000',
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    elevation: 1,
   },
-  recordingDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: '#ef4444',
-  },
-  recordingTime: {
-    color: '#f1f5f9',
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  recordingRows: {
-    color: '#94a3b8',
-    fontSize: 12,
-  },
-  markerButton: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: '#3b82f6',
-    borderRadius: 6,
-  },
-  markerButtonText: {
-    color: '#fff',
+  markerText: {
+    color: theme.colors.text,
     fontSize: 12,
     fontWeight: '600',
+    fontVariant: ['tabular-nums'] as const,
+  },
+  divider: {
+    height: 1,
+    backgroundColor: '#21262D',
+    marginVertical: theme.spacing.md,
+  },
+  sectionTitle: {
+    color: theme.colors.secondaryText,
+    fontSize: 11,
+    letterSpacing: 1.5,
+    fontWeight: '600',
+    marginBottom: theme.spacing.md,
   },
   listContent: {
-    padding: 8,
+    paddingBottom: theme.spacing.lg,
   },
-  emptyContainer: {
-    flex: 1,
-    justifyContent: 'center',
+  empty: {
     alignItems: 'center',
-    paddingTop: 60,
+    paddingVertical: theme.spacing.md,
   },
   emptyText: {
-    color: '#64748b',
+    color: theme.colors.secondaryText,
     fontSize: 14,
   },
 });

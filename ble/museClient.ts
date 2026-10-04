@@ -1,10 +1,10 @@
 import type { Device, BleManager as BleManagerType } from 'react-native-ble-plx';
 import { Platform } from 'react-native';
 import { MuseDeviceInfo, ConnectionStatus, EegChannel } from '@/types/muse';
-import { MUSE_SERVICE_UUID, MUSE_CHAR, EEG_CHAR_BY_CHANNEL, MUSE_NAME_PREFIX, MUSE_PRESET, ACCEL_G_PER_LSB, GYRO_DPS_PER_LSB } from '@/constants/muse';
+import { MUSE_SERVICE_UUID, MUSE_CHAR, EEG_CHAR_BY_CHANNEL, MUSE_NAME_PREFIX, MUSE_PRESET, MUSE_PPG_PRESET, ACCEL_G_PER_LSB, GYRO_DPS_PER_LSB } from '@/constants/muse';
 import { getBleManager } from './bleManager';
 import { museSimulator } from './museSimulator';
-import { base64ToBytes, decodeEegPacket, decodeBattery, decodeMotion } from './museDecoder';
+import { base64ToBytes, decodeEegPacket, decodeBattery, decodeMotion, decodePpg } from './museDecoder';
 import { encodeCommand, CMD_HALT, CMD_RESUME } from './museCommands';
 import { dspEngine } from '@/dsp/dspEngine';
 import { recorder } from '@/recording/recorder';
@@ -23,6 +23,8 @@ const EEG_CHANNELS: EegChannel[] = ['TP9', 'AF7', 'AF8', 'TP10'];
  * En ambos casos los datos fluyen al mismo dspEngine y store.
  */
 class MuseClient {
+  private ppgEnabled = false;
+  private ppgPacketCount = 0;
   // Ruta nativa
   private nativeDevice: Device | null = null;
   private isNativeConnected: boolean = false;
@@ -138,6 +140,10 @@ class MuseClient {
       const device = await manager.connectToDevice(deviceId, { requestMTU: 247 });
       this.nativeDevice = device;
       await device.discoverAllServicesAndCharacteristics();
+      const characteristics = await device.characteristicsForService(MUSE_SERVICE_UUID);
+      this.ppgEnabled = characteristics.some((c: { uuid: string }) => c.uuid.toLowerCase() === MUSE_CHAR.PPG);
+      this.ppgPacketCount = 0;
+      console.info(`[Muse] PPG infrarrojo ${this.ppgEnabled ? 'disponible; preset p50' : 'no disponible; preset p21'}`);
 
       if (!this.nativeDevice) {
         throw new Error('Failed to connect to device');
@@ -201,6 +207,9 @@ class MuseClient {
       // Conectar al dispositivo seleccionado en scanWeb
       await museWebBluetooth.connect();
       this.isWebConnected = true;
+      this.ppgEnabled = await museWebBluetooth.hasCharacteristic(MUSE_CHAR.PPG);
+      this.ppgPacketCount = 0;
+      console.info(`[Muse] PPG infrarrojo ${this.ppgEnabled ? 'disponible; preset p50' : 'no disponible; preset p21'}`);
 
       store.setStatus('discovering');
 
@@ -235,6 +244,7 @@ class MuseClient {
 
     // Simulator
     if (museSimulator.isRunning()) {
+      if (store.isRecording) await recorder.stop();
       museSimulator.stop();
       dspEngine.stop();
       store.reset();
@@ -391,6 +401,29 @@ class MuseClient {
         }
       },
     );
+
+    // Suscribir a PPG (ritmo cardíaco)
+    if (this.ppgEnabled) this.nativeDevice.monitorCharacteristicForService(
+      MUSE_SERVICE_UUID,
+      MUSE_CHAR.PPG,
+      (error, characteristic) => {
+        if (error) {
+          console.error('Error monitoring ppg:', error);
+          return;
+        }
+        if (characteristic?.value) {
+          try {
+            const bytes = base64ToBytes(characteristic.value);
+            const packet = decodePpg(bytes, Date.now());
+            this.ppgPacketCount++;
+            if (this.ppgPacketCount === 1) console.info('[Muse] Primer paquete PPG infrarrojo recibido: 6 muestras');
+            dspEngine.pushPpg(packet);
+          } catch (e) {
+            console.error('Error decoding ppg:', e);
+          }
+        }
+      },
+    );
   }
 
   // ─── Suscripciones web ──────────────────────────────────────────────
@@ -458,6 +491,20 @@ class MuseClient {
         console.error('Error decoding gyro:', e);
       }
     });
+
+    // Suscribir a PPG (ritmo cardíaco)
+    if (this.ppgEnabled) await museWebBluetooth.monitor(MUSE_CHAR.PPG, (error, value) => {
+      if (error || !value) return;
+      try {
+        const bytes = base64ToBytes(value);
+        const packet = decodePpg(bytes, Date.now());
+        this.ppgPacketCount++;
+            if (this.ppgPacketCount === 1) console.info('[Muse] Primer paquete PPG infrarrojo recibido: 6 muestras');
+            dspEngine.pushPpg(packet);
+      } catch (e) {
+        console.error('Error decoding ppg:', e);
+      }
+    });
   }
 
   // ─── Comandos nativos ───────────────────────────────────────────────
@@ -465,7 +512,7 @@ class MuseClient {
   private async sendStartCommandsNative(): Promise<void> {
     if (!this.nativeDevice) return;
 
-    const commands = [CMD_HALT, MUSE_PRESET, CMD_RESUME];
+    const commands = [CMD_HALT, this.ppgEnabled ? MUSE_PPG_PRESET : MUSE_PRESET, CMD_RESUME];
 
     for (const cmd of commands) {
       const encoded = encodeCommand(cmd);
@@ -489,7 +536,7 @@ class MuseClient {
   // ─── Comandos web ───────────────────────────────────────────────────
 
   private async sendStartCommandsWeb(): Promise<void> {
-    const commands = [CMD_HALT, MUSE_PRESET, CMD_RESUME];
+    const commands = [CMD_HALT, this.ppgEnabled ? MUSE_PPG_PRESET : MUSE_PRESET, CMD_RESUME];
 
     for (const cmd of commands) {
       const encoded = encodeCommand(cmd);
@@ -504,6 +551,7 @@ class MuseClient {
   async connectSimulator(): Promise<void> {
     const store = useMuseStore.getState();
     store.setStatus('streaming');
+    store.setSimulating(true);
     dspEngine.start();
     museSimulator.start();
     store.setDevice({ id: 'sim-1', name: 'Muse Simulator', rssi: 0 });

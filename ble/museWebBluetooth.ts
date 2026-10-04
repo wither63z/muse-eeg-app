@@ -30,6 +30,13 @@ export class MuseWebBluetooth {
     this.server = await this.device.gatt!.connect();
   }
 
+  async hasCharacteristic(uuid: string): Promise<boolean> {
+    if (!this.server) throw new Error('Not connected');
+    const service = await this.server.getPrimaryService(MUSE_SERVICE_UUID);
+    const characteristics = await service.getCharacteristics();
+    return characteristics.some((characteristic) => characteristic.uuid.toLowerCase() === uuid.toLowerCase());
+  }
+
   async monitor(
     charUuid: string,
     callback: (error: Error | null, value: string | null) => void

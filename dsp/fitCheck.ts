@@ -30,14 +30,16 @@ export function computeFit(
   windows: ChannelMap<Float32Array>,
   previous: FitCheck,
   pendingCounters: ChannelMap<number>,
-): { fit: FitCheck; headbandOn: boolean } {
+): { fit: FitCheck; headbandOn: boolean; diagnostics: ChannelMap<SignalQualityDiagnostic> } {
   const channels: (keyof ChannelMap<FitLevel>)[] = ['TP9', 'AF7', 'AF8', 'TP10'];
   const newFit: FitCheck = { ...previous };
   let allPoor = true;
+  const diagnostics = {} as ChannelMap<SignalQualityDiagnostic>;
 
   for (const ch of channels) {
     const window = windows[ch];
-    const level = evaluateChannel(window);
+    diagnostics[ch] = inspectSignalQuality(window);
+    const level = diagnostics[ch].level;
 
     // Histéresis
     if (level !== previous[ch]) {
@@ -55,49 +57,42 @@ export function computeFit(
     }
   }
 
-  return { fit: newFit, headbandOn: !allPoor };
+  return { fit: newFit, headbandOn: !allPoor, diagnostics };
 }
 
-function evaluateChannel(window: Float32Array): FitLevel {
-  const n = window.length;
-  if (n === 0) return 2;
+export interface SignalQualityDiagnostic {
+  level: FitLevel;
+  sigmaUv: number;
+  mainsRatio: number;
+  clippedFraction: number;
+  reason: string;
+}
 
-  // Calcular media y desviación estándar
-  let sum = 0;
-  let maxAbs = 0;
-  for (let i = 0; i < n; i++) {
-    const v = window[i];
-    sum += v;
-    const abs = Math.abs(v);
-    if (abs > maxAbs) maxAbs = abs;
+export function inspectSignalQuality(window: Float32Array): SignalQualityDiagnostic {
+  const n = window.length;
+  const result: SignalQualityDiagnostic = { level: 2, sigmaUv: 0, mainsRatio: 0, clippedFraction: 0, reason: 'Esperando datos' };
+  if (n === 0) return result;
+  let sum = 0, clipped = 0;
+  for (const value of window) {
+    if (!Number.isFinite(value)) return { ...result, reason: 'Datos inválidos' };
+    sum += value;
+    if (Math.abs(value) >= FIT_THRESHOLDS.saturationUv) clipped++;
   }
   const mean = sum / n;
-
   let sumSq = 0;
-  for (let i = 0; i < n; i++) {
-    const diff = window[i] - mean;
-    sumSq += diff * diff;
+  for (const value of window) sumSq += (value - mean) ** 2;
+  result.sigmaUv = Math.sqrt(sumSq / n);
+  result.clippedFraction = clipped / n;
+  // A single transient must not classify an entire window as saturated.
+  if (result.clippedFraction >= 0.02) return { ...result, reason: 'Señal saturada' };
+  if (result.sigmaUv < FIT_THRESHOLDS.flatSigmaUv) return { ...result, reason: 'Señal plana' };
+  if (result.sigmaUv > FIT_THRESHOLDS.poorSigmaUv) return { ...result, reason: 'Variación excesiva' };
+  result.mainsRatio = calculateMainsRatio(window, mean);
+  if (result.mainsRatio > FIT_THRESHOLDS.poorMainsRatio) return { ...result, reason: 'Interferencia de red' };
+  if (result.sigmaUv >= FIT_THRESHOLDS.fairSigmaUv || result.mainsRatio >= FIT_THRESHOLDS.fairMainsRatio) {
+    return { ...result, level: 1, reason: 'Señal regular' };
   }
-  const sigma = Math.sqrt(sumSq / n);
-
-  // Criterios de Malo
-  if (maxAbs >= FIT_THRESHOLDS.saturationUv) return 2;
-  if (sigma < FIT_THRESHOLDS.flatSigmaUv) return 2;
-  if (sigma > FIT_THRESHOLDS.poorSigmaUv) return 2;
-
-  // Calcular ratioMains usando FFT
-  const ratioMains = calculateMainsRatio(window, mean);
-
-  if (ratioMains > FIT_THRESHOLDS.poorMainsRatio) return 2;
-
-  // Criterios de Regular
-  if (sigma >= FIT_THRESHOLDS.fairSigmaUv) return 1;
-  if (ratioMains >= FIT_THRESHOLDS.fairMainsRatio) return 1;
-
-  // Bueno
-  if (sigma >= FIT_THRESHOLDS.goodSigmaUv) return 0;
-
-  return 2;
+  return { ...result, level: 0, reason: 'Señal buena' };
 }
 
 /**

@@ -68,8 +68,8 @@ export type GyroscopePacket = MotionSample;     // unidades: °/s
 
 export interface PpgSample {
   sequence: number;
-  /** 3 muestras por paquete. */
-  samples: [number, number, number];
+  /** Muse clásico: 6 muestras unsigned de 24 bits por paquete. */
+  samples: number[];
   receivedAtMs: number;
 }
 
@@ -118,8 +118,10 @@ export interface MuseState {
   fit: FitCheck;
   headbandOn: boolean;
   bands: BandPowerFrame | null;      // actualizado a 10 Hz
+  heartRate: number | null;          // BPM estimado desde PPG
   stats: StreamStats;
   isRecording: boolean;
+  isSimulating: boolean;
   recordingStartedAtMs: number | null;
   recordingRowCount: number;
   recordings: RecordingMeta[];
@@ -133,8 +135,10 @@ export interface MuseActions {
   setMotion(accel: Vec3 | null, gyro: Vec3 | null, tMs: number): void;
   setFit(fit: FitCheck): void;
   setBands(frame: BandPowerFrame): void;
+  setHeartRate(bpm: number | null): void;
   setStats(stats: StreamStats): void;
   setRecording(active: boolean, startedAtMs: number | null): void;
+  setSimulating(active: boolean): void;
   setRecordingRowCount(n: number): void;
   setRecordings(list: RecordingMeta[]): void;
   reset(): void;   // tras desconexión: limpia telemetría/fit/bands/stats

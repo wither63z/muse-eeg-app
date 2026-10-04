@@ -51,7 +51,7 @@ class SegmentedSink implements RecordingSink {
   async flush(): Promise<void> {
     if (this.currentRows.length === 0) return;
 
-    const FileSystem = require('expo-file-system') as typeof import('expo-file-system');
+    const FileSystem = require('expo-file-system/legacy') as typeof import('expo-file-system/legacy');
 
     this.partNumber++;
     const partFileUri = `${this.dir}/part-${String(this.partNumber).padStart(4, '0')}.csv`;
@@ -63,7 +63,7 @@ class SegmentedSink implements RecordingSink {
   async close(meta: RecordingMeta): Promise<string> {
     await this.flush();
 
-    const FileSystem = require('expo-file-system') as typeof import('expo-file-system');
+    const FileSystem = require('expo-file-system/legacy') as typeof import('expo-file-system/legacy');
 
     const metaUri = `${this.dir}/meta.json`;
     await FileSystem.writeAsStringAsync(metaUri, JSON.stringify(meta));
@@ -136,9 +136,9 @@ class Recorder {
       const id = Date.now().toString(36);
       this.sink = new WebSink(id);
     } else {
-      const FileSystem = require('expo-file-system') as typeof import('expo-file-system');
+      const FileSystem = require('expo-file-system/legacy') as typeof import('expo-file-system/legacy');
       const id = Date.now().toString(36);
-      const dirUri = `${(FileSystem as any).documentDirectory}recordings/${id}`;
+      const dirUri = `${FileSystem.documentDirectory}recordings/${id}`;
       await FileSystem.makeDirectoryAsync(dirUri, { intermediates: true });
       this.sink = new SegmentedSink(dirUri);
     }
@@ -262,7 +262,7 @@ class Recorder {
       fileName: makeFileName(new Date(this.startTime)),
       startedAtMs: this.startTime,
       durationMs: Date.now() - this.startTime,
-      rowCount: this.getRowCount(),
+      rowCount: totalRows,
       sizeBytes: 0,
       uri,
     };
@@ -302,7 +302,7 @@ class Recorder {
   }
 
   private getRowCount(): number {
-    return this.pendingRows.length;
+    return (this.sink?.getTotalRows() ?? 0) + this.pendingRows.length;
   }
 }
 

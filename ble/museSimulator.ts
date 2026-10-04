@@ -1,5 +1,5 @@
-import { EegPacket, EegChannel, Vec3 } from '@/types/muse';
-import { SAMPLE_RATE_HZ, SAMPLES_PER_EEG_PACKET } from '@/constants/muse';
+import { EegPacket, EegChannel, Vec3, PpgSample } from '@/types/muse';
+import { SAMPLE_RATE_HZ, SAMPLES_PER_EEG_PACKET, PPG_SAMPLE_RATE_HZ } from '@/constants/muse';
 import { dspEngine } from '@/dsp/dspEngine';
 import { useMuseStore } from '@/store/useMuseStore';
 
@@ -17,9 +17,12 @@ const NOISE_LEVEL = 5; // 5 µV noise
 export class MuseSimulator {
   private interval: ReturnType<typeof setInterval> | null = null;
   private telemetryInterval: ReturnType<typeof setInterval> | null = null;
+  private ppgInterval: ReturnType<typeof setInterval> | null = null;
   private sequence = 0;
+  private ppgSequence = 0;
   private startTime = 0;
   private sampleCount = 0;
+  private ppgSampleCount = 0;
 
   start(): void {
     if (this.interval) return;
@@ -27,6 +30,8 @@ export class MuseSimulator {
     this.startTime = Date.now();
     this.sampleCount = 0;
     this.sequence = 0;
+    this.ppgSampleCount = 0;
+    this.ppgSequence = 0;
 
     // Packet interval: 1000 / (256/12) = 46.875ms
     const intervalMs = (1000 * SAMPLES_PER_EEG_PACKET) / SAMPLE_RATE_HZ;
@@ -38,6 +43,12 @@ export class MuseSimulator {
     this.telemetryInterval = setInterval(() => {
       this.generateTelemetry();
     }, 1000); // 1 Hz telemetry
+
+    // PPG: 3 muestras por paquete a 64 Hz → intervalo ≈ 46.875 ms
+    const ppgIntervalMs = (1000 * 3) / PPG_SAMPLE_RATE_HZ;
+    this.ppgInterval = setInterval(() => {
+      this.generatePpg();
+    }, ppgIntervalMs);
   }
 
   stop(): void {
@@ -48,6 +59,10 @@ export class MuseSimulator {
     if (this.telemetryInterval) {
       clearInterval(this.telemetryInterval);
       this.telemetryInterval = null;
+    }
+    if (this.ppgInterval) {
+      clearInterval(this.ppgInterval);
+      this.ppgInterval = null;
     }
   }
 
@@ -110,6 +125,52 @@ export class MuseSimulator {
     };
 
     store.setMotion(accel, gyro, now);
+  }
+
+  private generatePpg(): void {
+    const now = Date.now();
+    const t = this.ppgSampleCount / PPG_SAMPLE_RATE_HZ;
+
+    // Simular señal PPG: onda tipo pulso cardíaco (~70 BPM = ~857ms período)
+    const heartRate = 70; // BPM
+    const period = 60000 / heartRate; // ms
+    const phase = (t * 1000) % period;
+
+    // Generar 3 muestras
+    const samples: [number, number, number] = [0, 0, 0];
+    for (let i = 0; i < 3; i++) {
+      const sampleTime = t + i / PPG_SAMPLE_RATE_HZ;
+      const samplePhase = (sampleTime * 1000) % period;
+      const normalizedPhase = samplePhase / period;
+
+      // Forma de onda PPG realista: pico rápido + dicrotico notch + decaimiento
+      let value = 0;
+      if (normalizedPhase < 0.2) {
+        // Subida sistólica
+        value = Math.sin(normalizedPhase / 0.2 * Math.PI / 2);
+      } else if (normalizedPhase < 0.35) {
+        // Pico y notch dicrotico
+        value = Math.cos((normalizedPhase - 0.2) / 0.15 * Math.PI / 2) * 0.8;
+      } else if (normalizedPhase < 0.8) {
+        // Decaimiento diastólico
+        value = 0.3 * Math.exp(-(normalizedPhase - 0.35) / 0.45 * 3);
+      }
+      // Ruido fisiológico
+      value += (Math.random() - 0.5) * 0.05;
+      // Escalar a rango típico ADC (signed 24-bit range)
+      samples[i as 0 | 1 | 2] = Math.round(value * 100000);
+    }
+
+    const packet: PpgSample = {
+      sequence: this.ppgSequence,
+      samples,
+      receivedAtMs: now,
+    };
+
+    dspEngine.pushPpg(packet);
+
+    this.ppgSampleCount += 3;
+    this.ppgSequence = (this.ppgSequence + 1) % 65536;
   }
 }
 

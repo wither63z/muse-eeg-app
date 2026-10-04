@@ -13,32 +13,38 @@ import { MuseStore, ConnectionStatus, MuseDeviceInfo, BatteryReading, Vec3, FitC
  * Nunca useMuseStore() sin selector.
  */
 
+const INITIAL_STATE = {
+  status: 'idle' as ConnectionStatus,
+  errorMessage: null,
+  discovered: [] as MuseDeviceInfo[],
+  device: null,
+  telemetry: {
+    battery: null,
+    accel: null,
+    gyro: null,
+    ppg: null,
+  },
+  fit: { TP9: 2, AF7: 2, AF8: 2, TP10: 2 } as FitCheck,
+  headbandOn: false,
+  bands: null,
+  heartRate: null,
+  stats: {
+    packetsReceived: { TP9: 0, AF7: 0, AF8: 0, TP10: 0 },
+    packetsDropped: { TP9: 0, AF7: 0, AF8: 0, TP10: 0 },
+    effectiveRateHz: null,
+  } as StreamStats,
+  isRecording: false,
+  isSimulating: false,
+  recordingStartedAtMs: null,
+  recordingRowCount: 0,
+  recordings: [] as RecordingMeta[],
+};
+
 export const useMuseStore = create<MuseStore>()(
   subscribeWithSelector(
     persist(
       (set) => ({
-        // Estado inicial
-        status: 'idle' as ConnectionStatus,
-        errorMessage: null,
-        discovered: [] as MuseDeviceInfo[],
-        device: null,
-        telemetry: {
-          battery: null,
-          accel: null,
-          gyro: null,
-        },
-        fit: { TP9: 2, AF7: 2, AF8: 2, TP10: 2 } as FitCheck,
-        headbandOn: false,
-        bands: null,
-        stats: {
-          packetsReceived: { TP9: 0, AF7: 0, AF8: 0, TP10: 0 },
-          packetsDropped: { TP9: 0, AF7: 0, AF8: 0, TP10: 0 },
-          effectiveRateHz: null,
-        } as StreamStats,
-        isRecording: false,
-        recordingStartedAtMs: null,
-        recordingRowCount: 0,
-        recordings: [] as RecordingMeta[],
+        ...INITIAL_STATE,
 
         // Acciones
         setStatus: (status: ConnectionStatus, errorMessage?: string | null) =>
@@ -70,11 +76,17 @@ export const useMuseStore = create<MuseStore>()(
         setBands: (frame: BandPowerFrame) =>
           set({ bands: frame }),
 
+        setHeartRate: (bpm: number | null) =>
+          set({ heartRate: bpm }),
+
         setStats: (stats: StreamStats) =>
           set({ stats }),
 
         setRecording: (active: boolean, startedAtMs: number | null) =>
           set({ isRecording: active, recordingStartedAtMs: startedAtMs }),
+
+        setSimulating: (active: boolean) =>
+          set({ isSimulating: active }),
 
         setRecordingRowCount: (n: number) =>
           set({ recordingRowCount: n }),
@@ -82,28 +94,14 @@ export const useMuseStore = create<MuseStore>()(
         setRecordings: (list: RecordingMeta[]) =>
           set({ recordings: list }),
 
-        reset: () =>
-          set({
-            telemetry: { battery: null, accel: null, gyro: null },
-            fit: { TP9: 2, AF7: 2, AF8: 2, TP10: 2 },
-            headbandOn: false,
-            bands: null,
-            stats: {
-              packetsReceived: { TP9: 0, AF7: 0, AF8: 0, TP10: 0 },
-              packetsDropped: { TP9: 0, AF7: 0, AF8: 0, TP10: 0 },
-              effectiveRateHz: null,
-            },
-            isRecording: false,
-            recordingStartedAtMs: null,
-            recordingRowCount: 0,
-          }),
+        reset: () => set((state) => ({ ...INITIAL_STATE, recordings: state.recordings })),
       }),
       {
         name: 'muse-storage',
         storage:
           Platform.OS === 'web' ? createJSONStorage(() => localStorage) : undefined,
         partialize: (state) => ({
-          recordings: state.recordings,
+          status: state.status, // Guardar solo estado ligero
         }),
       }
     )

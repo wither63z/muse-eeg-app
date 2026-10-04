@@ -1,8 +1,10 @@
 import React, { useRef, useCallback, useEffect, useState } from 'react';
 import { View, Text, StyleSheet, Dimensions, Platform } from 'react-native';
 import { SharedValue, useSharedValue } from 'react-native-reanimated';
+import { theme } from '@/constants/Theme';
 import { EegChannel } from '@/types/muse';
 import { dspEngine } from '@/dsp/dspEngine';
+import { highPassDisplayWindow } from '@/dsp/displaySignal';
 import { useRafLoop } from '@/hooks/useRafLoop';
 
 // Importación condicional por plataforma
@@ -34,7 +36,12 @@ interface EegScopeProps {
 }
 
 const EEG_CHANNELS: EegChannel[] = ['TP9', 'AF7', 'AF8', 'TP10'];
-const CHANNEL_COLORS = ['#3b82f6', '#22c55e', '#f59e0b', '#ef4444'] as const;
+const CHANNEL_COLORS = [
+  theme.colors.electrodes.tp9,
+  theme.colors.electrodes.af7,
+  theme.colors.electrodes.af8,
+  theme.colors.electrodes.tp10,
+] as const;
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const LANE_HEIGHT = 180;
@@ -45,7 +52,10 @@ export function EegScope({ windowSeconds, uvPerDiv, paused, displayHighPass }: E
   // Para web, usamos ref de canvas
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const bufferRef = useRef<Float32Array>(new Float32Array(windowSeconds * 256));
-  const highPassStateRef = useRef<Map<EegChannel, { yPrev: number; xPrev: number }>>(new Map());
+  // La ventana se vuelve a dibujar: no reutilizar estado de filtro de otra pasada.
+  useEffect(() => {
+    bufferRef.current = new Float32Array(windowSeconds * 256);
+  }, [windowSeconds]);
 
   // Para nativo, usamos shared values de Skia
   let path0, path1, path2, path3;
@@ -74,8 +84,8 @@ export function EegScope({ windowSeconds, uvPerDiv, paused, displayHighPass }: E
         const n = dspEngine.getScopeWindow(ch, windowSeconds, buf);
 
         if (n === 0) continue;
+        if (displayHighPass) highPassDisplayWindow(buf, n);
 
-        const samplesPerColumn = Math.max(1, Math.floor(n / canvas.width));
         const centerY = LANE_HEIGHT * chIdx + LANE_HEIGHT / 2;
         const divHeight = LANE_HEIGHT / 2;
 
@@ -85,22 +95,14 @@ export function EegScope({ windowSeconds, uvPerDiv, paused, displayHighPass }: E
 
         let first = true;
         for (let col = 0; col < canvas.width; col++) {
-          const start = col * samplesPerColumn;
-          const end = Math.min(start + samplesPerColumn, n);
+          const start = Math.floor(col * n / canvas.width);
+          const end = Math.min(n, Math.max(start + 1, Math.floor((col + 1) * n / canvas.width)));
 
           let minUv = Infinity;
           let maxUv = -Infinity;
 
           for (let i = start; i < end; i++) {
-            let uv = buf[i];
-
-            if (displayHighPass) {
-              const state = highPassStateRef.current.get(ch) || { yPrev: 0, xPrev: 0 };
-              const alpha = 0.9879;
-              const y = alpha * (state.yPrev + uv - state.xPrev);
-              highPassStateRef.current.set(ch, { yPrev: y, xPrev: uv });
-              uv = y;
-            }
+            const uv = buf[i];
 
             if (uv < minUv) minUv = uv;
             if (uv > maxUv) maxUv = uv;
@@ -134,29 +136,22 @@ export function EegScope({ windowSeconds, uvPerDiv, paused, displayHighPass }: E
         const n = dspEngine.getScopeWindow(ch, windowSeconds, buf);
 
         if (n === 0) continue;
+        if (displayHighPass) highPassDisplayWindow(buf, n);
 
-        const path = SkiaComponents.Skia.Path.Make();
-        const samplesPerColumn = Math.max(1, Math.floor(n / width));
+        const path = paths[chIdx].value;
+        path.reset();
         const centerY = LANE_HEIGHT * chIdx + LANE_HEIGHT / 2;
         const divHeight = LANE_HEIGHT / 2;
 
         for (let col = 0; col < width; col++) {
-          const start = col * samplesPerColumn;
-          const end = Math.min(start + samplesPerColumn, n);
+          const start = Math.floor(col * n / width);
+          const end = Math.min(n, Math.max(start + 1, Math.floor((col + 1) * n / width)));
 
           let minUv = Infinity;
           let maxUv = -Infinity;
 
           for (let i = start; i < end; i++) {
-            let uv = buf[i];
-
-            if (displayHighPass) {
-              const state = highPassStateRef.current.get(ch) || { yPrev: 0, xPrev: 0 };
-              const alpha = 0.9879;
-              const y = alpha * (state.yPrev + uv - state.xPrev);
-              highPassStateRef.current.set(ch, { yPrev: y, xPrev: uv });
-              uv = y;
-            }
+            const uv = buf[i];
 
             if (uv < minUv) minUv = uv;
             if (uv > maxUv) maxUv = uv;
@@ -253,7 +248,7 @@ export function EegScope({ windowSeconds, uvPerDiv, paused, displayHighPass }: E
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0f172a',
+    backgroundColor: '#0C1017',
   },
   canvas: {
     flex: 1,

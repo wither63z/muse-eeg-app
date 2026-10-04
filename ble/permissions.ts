@@ -10,7 +10,7 @@ import { Platform, PermissionsAndroid } from 'react-native';
  * Devuelve true solo si todos están en GRANTED.
  */
 export async function ensureBlePermissions(): Promise<boolean> {
-  if (Platform.OS === 'ios') {
+  if (Platform.OS === 'ios' || Platform.OS === 'web') {
     return true;
   }
 

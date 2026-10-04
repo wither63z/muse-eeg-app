@@ -1,5 +1,5 @@
 import { Platform } from 'react-native';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import { RecordingMeta } from '@/types/muse';
 import { MM_CSV_HEADER } from './csvFormat';
 
@@ -12,7 +12,7 @@ export async function list(): Promise<RecordingMeta[]> {
     return [];
   }
 
-  const recordingsDir = `${(FileSystem as any).documentDirectory}recordings/`;
+  const recordingsDir = `${FileSystem.documentDirectory}recordings/`;
 
   try {
     // Asegurarse de que el directorio existe
@@ -45,7 +45,7 @@ export async function deleteRecording(id: string): Promise<void> {
     return;
   }
 
-  const dir = `${(FileSystem as any).documentDirectory}recordings/${id}/`;
+  const dir = `${FileSystem.documentDirectory}recordings/${id}/`;
   try {
     await FileSystem.deleteAsync(dir, { idempotent: true });
   } catch {
@@ -63,13 +63,13 @@ export async function exportCsv(id: string): Promise<string> {
     return '';
   }
 
-  const dir = `${(FileSystem as any).documentDirectory}recordings/${id}/`;
+  const dir = `${FileSystem.documentDirectory}recordings/${id}/`;
   const metaFileUri = `${dir}meta.json`;
 
   const metaContent = await FileSystem.readAsStringAsync(metaFileUri);
   const meta: RecordingMeta = JSON.parse(metaContent);
 
-  const parts: string[] = [MM_CSV_HEADER];
+  const parts: string[] = [];
   try {
     const files = await FileSystem.readDirectoryAsync(dir);
     const partFiles = files
@@ -84,7 +84,7 @@ export async function exportCsv(id: string): Promise<string> {
     // Si no podemos leer partes, devolvemos solo la cabecera
   }
 
-  const outputFileUri = `${(FileSystem as any).cacheDirectory}${meta.fileName}`;
+  const outputFileUri = `${FileSystem.cacheDirectory}${meta.fileName}`;
   await FileSystem.writeAsStringAsync(outputFileUri, parts.join('\n'));
 
   return outputFileUri;

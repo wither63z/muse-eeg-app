@@ -1,0 +1,43 @@
+{
+  "size_mb": 22.26,
+  "rows": 96576,
+  "duration_seconds": 94.233,
+  "rows_per_second": 1024.9,
+  "repeated_timestamp_percent": 94.1,
+  "invalid_rows": 0,
+  "channels": {
+    "TP9": {
+      "changed_samples": 23387,
+      "sigma_uv": 204.77,
+      "min_uv": -1000.0,
+      "max_uv": 999.512,
+      "median_peak_hz": 60.0,
+      "median_60hz_ratio_percent": 97.3
+    },
+    "AF7": {
+      "changed_samples": 22203,
+      "sigma_uv": 329.29,
+      "min_uv": -1000.0,
+      "max_uv": 999.512,
+      "median_peak_hz": 60.0,
+      "median_60hz_ratio_percent": 55.4
+    },
+    "AF8": {
+      "changed_samples": 23378,
+      "sigma_uv": 76.15,
+      "min_uv": -635.254,
+      "max_uv": 933.105,
+      "median_peak_hz": 60.0,
+      "median_60hz_ratio_percent": 60.2
+    },
+    "TP10": {
+      "changed_samples": 23784,
+      "sigma_uv": 114.96,
+      "min_uv": -1000.0,
+      "max_uv": 999.512,
+      "median_peak_hz": 60.0,
+      "median_60hz_ratio_percent": 79.7
+    }
+  },
+  "spectral_caveat": "Approximate spectrum at 256 Hz after retaining only changed values in held RAW columns. Identical consecutive real samples cannot be reconstructed; channel synchronization is not established by this CSV."
+}
