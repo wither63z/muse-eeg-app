@@ -3,8 +3,19 @@ import { EEG_CHANNELS, BAND_NAMES } from '@/types/muse';
 
 /**
  * Cabecera CSV compatible con Mind Monitor.
- * Verificar contra un CSV real exportado por Mind Monitor;
- * si difiere, solo se cambia esta constante.
+ *
+ * El orden y nombres de columnas debe verificarse contra un CSV real
+ * exportado por Mind Monitor; si difiere, solo cambiar esta constante.
+ *
+ * Estructura:
+ * - TimeStamp: yyyy-MM-dd HH:mm:ss.SSS en hora local.
+ * - 20 columnas de bandas (5 × 4 canales: Delta, Theta, Alpha, Beta, Gamma).
+ * - 4 columnas RAW (µV).
+ * - 6 columnas de movimiento (3 accel + 3 gyro).
+ * - HeadBandOn (1/0).
+ * - 4 columnas HSI (1=bueno, 2=regular, 4=malo).
+ * - Battery (% con 1 decimal).
+ * - Elements (texto de marcador o vacío).
  */
 export const MM_CSV_HEADER = [
   'TimeStamp',

@@ -11,11 +11,19 @@ export function base64ToBytes(b64: string): Uint8Array {
 
 /**
  * Decodifica un paquete EEG de 20 bytes.
- * 
+ *
  * Layout: [seqHi, seqLo, ...18 bytes]
- * Los 18 bytes contienen 12 muestras de 12 bits big-endian empaquetadas.
- * Muestras pares (0,2,4…) ocupan byte[k] completo + nibble alto de byte[k+1].
- * Las impares ocupan nibble bajo de byte[k] + byte[k+1] completo.
+ * - bytes[0-1]: Secuencia uint16 (0..65535, wrap-around de 16 bits).
+ * - bytes[2-19]: 12 muestras de 12 bits big-endian empaquetados en 18 bytes.
+ *   * Muestras pares (índices 0, 2, 4, ..., 10):ocupan byte[k] completo
+ *     + nibble alto de byte[k+1]. Se extraen con `(bytes[k] << 4) | (bytes[k+1] >> 4)`.
+ *   * Muestras impares (índices 1, 3, 5, ..., 11):ocupan nibble bajo de byte[k]
+ *     + byte[k+1] completo. Se extraen con `((bytes[k] & 0x0f) << 8) | bytes[k+1]`.
+ *   * Factor de conversión a µV: (raw - 2048) * 0.48828125
+ *     (2000 µV / 4096 LSB, punto medio ADC = 2048).
+ *   * Validación: lanzar Error si `bytes.length !== 20`.
+ *
+ * El `sequence` lleva el control de wrap-around para detectar paquetes perdidos.
  */
 export function decodeEegPacket(
   channel: EegChannel,
@@ -93,13 +101,29 @@ export function decodeMotion(bytes: Uint8Array, scale: number): MotionSample {
   return { sequence, samples, receivedAtMs: Date.now() };
 }
 
-/** Muse 2/S clásico: secuencia BE de 16 bits + 6 muestras unsigned de 24 bits. */
+/** Muse 2/S clásico: secuencia BE de 16 bits + 6 muestras unsigned de 24 bits.
+ *
+ * Layout: [seqHi, seqLo, ...18 bytes de muestras (bytes 2 a 19)]
+ * - bytes[0-1]: Secuencia uint16.
+ * - 6 muestras de 24 bits empaquetadas en bytes[2..19], 3 bytes por muestra.
+ *   * offset 2: byte2 (MSB) * 65536 + byte3 (middle) * 256 + byte4 (LSB)
+ *   * offset 5: byte5 * 65536 + byte6 * 256 + byte7
+ *   * offset 8: byte8 * 65536 + byte9 * 256 + byte10
+ *   * offset 11: byte11 * 65536 + byte12 * 256 + byte13
+ *   * offset 14: byte14 * 65536 + byte15 * 256 + byte16
+ *   * offset 17: byte17 * 65536 + byte18 * 256 + byte19
+ * - La fórmula general: sample = bytes[offset] * 65536 + bytes[offset+1] * 256 + bytes[offset+2]
+ *   donde offset empieza en 2 e incrementa de 3 en 3 (2, 5, 8, 11, 14, 17).
+ *
+ * La secuencia permite reconocer el paso de 65535 a 0 y discontinuidades.
+ */
 export function decodePpg(bytes: Uint8Array, receivedAtMs: number): PpgSample {
   if (bytes.length !== 20) {
     throw new Error(`PPG packet length ${bytes.length} != 20`);
   }
   const samples: number[] = [];
   for (let offset = 2; offset < 20; offset += 3) {
+    // Cada muestra usa 3 bytes consecutivos para formar un valor unsigned de 24 bits.
     samples.push(bytes[offset] * 65536 + bytes[offset + 1] * 256 + bytes[offset + 2]);
   }
   return { sequence: (bytes[0] << 8) | bytes[1], samples, receivedAtMs };

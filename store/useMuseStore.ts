@@ -13,6 +13,16 @@ import { MuseStore, ConnectionStatus, MuseDeviceInfo, BatteryReading, Vec3, FitC
  * Nunca useMuseStore() sin selector.
  */
 
+/**
+ * Estado inicial de la tienda Muse.
+ *
+ * Regla crítica: las muestras de 256 Hz NUNCA entran aquí.
+ * Solo estado lento ≤10 Hz: bands (10 Hz), fit (2 Hz), battery (~0.1 Hz),
+ * accel/gyro (throttled a 10 Hz), stats (1 Hz).
+ *
+ * Los componentes usan selectores finos (`useMuseStore(s => s.status)`)
+ * y `useShallow` para objetos. Nunca `useMuseStore()` sin selector.
+ */
 const INITIAL_STATE = {
   status: 'idle' as ConnectionStatus,
   errorMessage: null,

@@ -34,12 +34,17 @@ class DspEngine {
   private bandCallbacks: Set<(f: BandPowerFrame) => void> = new Set();
   private lastFit: ReturnType<typeof computeFit> | null = null;
   private pendingCounters: ChannelMap<number> = { TP9: 0, AF7: 0, AF8: 0, TP10: 0 };
+  // Contadores de histéresis: exigen evaluaciones consecutivas antes de cambiar cada nivel.
   private highPassState: Map<EegChannel, { yPrev: number; xPrev: number }> = new Map();
+  // Estado heredado, actualmente sin uso en el filtrado visual.
+  // El osciloscopio filtra copias mediante displaySignal.ts.
   private packetsReceived: ChannelMap<number> = { TP9: 0, AF7: 0, AF8: 0, TP10: 0 };
   private packetsDropped: ChannelMap<number> = { TP9: 0, AF7: 0, AF8: 0, TP10: 0 };
   private statsTimer: ReturnType<typeof setInterval> | null = null;
   private sequenceUnwrappers: Map<EegChannel, { lastSeq: number | null; wraps: number; lastAbsPacket: number | null }> = new Map();
   private lastValidSample: Map<EegChannel, number> = new Map();
+    // Última muestra válida por canal, usada para gap filling (repetir muestra
+    // en lugar de cero cuando hay paquetes perdidos entre 1 y 49 paquetes (12 muestras por paquete)).
 
   // PPG (ritmo cardíaco)
   private ppgBuf: RingBuffer;
@@ -47,6 +52,9 @@ class DspEngine {
   private lastPpgReceivedAtMs = 0;
   private ppgLastSequence: number | null = null;
   private ppgAnalysisWindow = new Float32Array(PPG_SAMPLE_RATE_HZ * 8);
+    // Ventana de análisis para estimación de BPM desde PPG.
+    // Tamaño: 8 segundos a 64 Hz (PPG_SAMPLE_RATE_HZ), suficientes picos
+    // para el algoritmo de detección de latidos.
 
   constructor() {
     this.fft = new Fft(FFT_SIZE);
@@ -133,6 +141,8 @@ class DspEngine {
     }
     this.ppgLastSequence = packet.sequence;
     this.lastPpgReceivedAtMs = packet.receivedAtMs;
+    // Empujar todas las muestras del paquete al buffer circular de PPG.
+    // El buffer tiene ~10s de historial a 64 Hz (~640 muestras).
     for (const value of packet.samples) this.ppgBuf.push(value);
     this.ppgSampleCount += packet.samples.length;
     if (this.ppgSampleCount >= PPG_SAMPLE_RATE_HZ) {
