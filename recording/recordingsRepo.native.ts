@@ -1,7 +1,6 @@
 import { Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import { RecordingMeta } from '@/types/muse';
-import { MM_CSV_HEADER } from './csvFormat';
 
 /**
  * Repositorio de grabaciones — lista, elimina, exporta y comparte.
@@ -41,16 +40,13 @@ export async function list(): Promise<RecordingMeta[]> {
 }
 
 export async function deleteRecording(id: string): Promise<void> {
+  if (!/^[a-zA-Z0-9_-]+$/.test(id)) throw new Error('Identificador de grabación inválido.');
   if (Platform.OS === 'web') {
     return;
   }
 
   const dir = `${FileSystem.documentDirectory}recordings/${id}/`;
-  try {
-    await FileSystem.deleteAsync(dir, { idempotent: true });
-  } catch {
-    // Ignorar errores si el directorio ya no existe
-  }
+  await FileSystem.deleteAsync(dir, { idempotent: true });
 }
 
 /**
@@ -58,6 +54,7 @@ export async function deleteRecording(id: string): Promise<void> {
  * Devuelve el URI del archivo exportado.
  */
 export async function exportCsv(id: string): Promise<string> {
+  if (!/^[a-zA-Z0-9_-]+$/.test(id)) throw new Error('Identificador de grabación inválido.');
   if (Platform.OS === 'web') {
     console.warn('CSV export not implemented for web yet');
     return '';
@@ -68,20 +65,21 @@ export async function exportCsv(id: string): Promise<string> {
 
   const metaContent = await FileSystem.readAsStringAsync(metaFileUri);
   const meta: RecordingMeta = JSON.parse(metaContent);
+  if (!/^[a-zA-Z0-9_.-]+\.csv$/.test(meta.fileName)) throw new Error('Nombre de archivo inválido.');
 
   const parts: string[] = [];
   try {
     const files = await FileSystem.readDirectoryAsync(dir);
-    const partFiles = files
-      .filter((f) => f.startsWith('part-') && f.endsWith('.csv'))
-      .sort();
+    const partFiles = files.filter((f) => f.startsWith('part-') && f.endsWith('.csv')).sort();
 
     for (const file of partFiles) {
       const content = await FileSystem.readAsStringAsync(`${dir}${file}`);
       parts.push(content);
     }
   } catch {
-    // Si no podemos leer partes, devolvemos solo la cabecera
+    throw new Error(
+      'No se pudieron leer todos los segmentos. No se exportó un archivo incompleto.',
+    );
   }
 
   const outputFileUri = `${FileSystem.cacheDirectory}${meta.fileName}`;

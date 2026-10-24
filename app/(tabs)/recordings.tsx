@@ -9,16 +9,35 @@ import { GlowButton } from '@/components/GlowButton';
 
 export default function RecordingsScreen() {
   const status = useMuseStore((s) => s.status);
+  const isSimulating = useMuseStore((s) => s.isSimulating);
   const isRecording = useMuseStore((s) => s.isRecording);
   const recordingStartedAtMs = useMuseStore((s) => s.recordingStartedAtMs);
   const recordingRowCount = useMuseStore((s) => s.recordingRowCount);
   const recordings = useMuseStore((s) => s.recordings);
 
   const [elapsed, setElapsed] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const run = async (action: () => Promise<unknown>) => {
+    setError(null);
+    setSaving(true);
+    try {
+      await action();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'No se pudo completar la acción.');
+    } finally {
+      setSaving(false);
+    }
+  };
 
   useEffect(() => {
-    if (!isRecording || !recordingStartedAtMs) { setElapsed(0); return; }
-    const interval = setInterval(() => { setElapsed(Date.now() - recordingStartedAtMs); }, 1000);
+    if (!isRecording || !recordingStartedAtMs) {
+      setElapsed(0);
+      return;
+    }
+    const interval = setInterval(() => {
+      setElapsed(Date.now() - recordingStartedAtMs);
+    }, 1000);
     return () => clearInterval(interval);
   }, [isRecording, recordingStartedAtMs]);
 
@@ -34,14 +53,15 @@ export default function RecordingsScreen() {
     return parts.join(':');
   };
 
-  const handleStart = async () => await recorder.start();
-  const handleStop = async () => {
-    await recorder.stop();
-    const list = await recordingsRepo.list();
-    useMuseStore.getState().setRecordings(list);
-  };
+  const handleStart = () => run(() => recorder.start());
+  const handleStop = () =>
+    run(async () => {
+      await recorder.stop();
+      const list = await recordingsRepo.list();
+      useMuseStore.getState().setRecordings(list);
+    });
   const handleMarker = (label: string) => recorder.addMarker(label);
-  const handleShare = async (id: string) => await recordingsRepo.share(id);
+  const handleShare = (id: string) => run(() => recordingsRepo.share(id));
   const handleDelete = async (id: string) => {
     await recordingsRepo.deleteRecording(id);
     const list = await recordingsRepo.list();
@@ -52,12 +72,23 @@ export default function RecordingsScreen() {
 
   return (
     <View style={styles.screen}>
+      {isSimulating && (
+        <Text style={{ color: theme.colors.simulator }}>
+          SIMULADOR · la grabación contiene datos sintéticos
+        </Text>
+      )}
+      {error && (
+        <Text accessibilityRole="alert" style={{ color: '#ff9b9b' }}>
+          {error}
+        </Text>
+      )}
       {/* Módulo de control superior */}
       <GlowButton
         label={isRecording ? `REC ${formatTime(elapsed)}` : 'Iniciar Grabación'}
         onPress={isRecording ? handleStop : handleStart}
+        disabled={saving || (!isStreaming && !isRecording)}
         accent={isRecording ? theme.colors.simulator : theme.colors.bands.beta}
-        style={{ opacity: (!isStreaming && !isRecording) ? 0.5 : 1, width: '100%' }}
+        style={{ opacity: !isStreaming && !isRecording ? 0.5 : 1, width: '100%' }}
       />
 
       {/* Marcadores horizontales */}

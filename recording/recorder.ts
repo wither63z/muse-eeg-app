@@ -1,309 +1,189 @@
 import { Platform } from 'react-native';
-import { RecordingMeta, TimedSample, BandPowerFrame, ChannelMap, FitLevel, Vec3 } from '@/types/muse';
-import { EEG_CHANNELS } from '@/types/muse';
-import { MM_CSV_HEADER, formatRow, makeFileName, RowState } from './csvFormat';
+import type { RecordingMeta, SensorSample, TimedSample } from '@/types/muse';
+import { RAW_CSV_HEADER, formatRawSample } from './csvFormat';
 import { dspEngine } from '@/dsp/dspEngine';
 import { useMuseStore } from '@/store/useMuseStore';
 
-const MAX_RECORDING_MIN = 20;
-const FLUSH_INTERVAL_MS = 60000; // 60 s
-const ROW_COUNT_INTERVAL_MS = 1000; // 1 s
-
-/**
- * Interfaz para escritura de grabaciones.
- * Permite reemplazar la implementación si expo-file-system cambia.
- */
 export interface RecordingSink {
   write(rows: string[]): Promise<void>;
   close(meta: RecordingMeta): Promise<string>;
   getTotalRows(): number;
   readonly dir: string;
 }
-
-/**
- * Implementación segmentada: escribe archivos part-NNNN.csv cada 60 s.
- * expo-file-system de SDK 51+ no permite append, de ahí los segmentos.
- */
 class SegmentedSink implements RecordingSink {
-  public readonly dir: string;
-  private partNumber: number = 0;
-  private currentRows: string[] = [];
-  private totalRows: number = 0;
-
+  readonly dir: string;
+  private part = 0;
+  private total = 0;
   constructor(dir: string) {
     this.dir = dir;
   }
-
-  getTotalRows(): number {
-    return this.totalRows;
+  getTotalRows() {
+    return this.total;
   }
-
-  async write(rows: string[]): Promise<void> {
-    this.currentRows.push(...rows);
-    this.totalRows += rows.length;
-
-    // Si ha pasado el intervalo de flush, escribir archivo
-    if (this.currentRows.length >= 15360) { // ~60 s a 256 Hz
-      await this.flush();
-    }
+  async write(rows: string[]) {
+    const fs = require('expo-file-system/legacy') as typeof import('expo-file-system/legacy');
+    const name = `${this.dir}/part-${String(this.part + 1).padStart(6, '0')}.csv`;
+    await fs.writeAsStringAsync(
+      name,
+      (this.part === 0 ? RAW_CSV_HEADER + '\n' : '') + rows.join('\n') + '\n',
+    );
+    this.part++;
+    this.total += rows.length;
   }
-
-  async flush(): Promise<void> {
-    if (this.currentRows.length === 0) return;
-
-    const FileSystem = require('expo-file-system/legacy') as typeof import('expo-file-system/legacy');
-
-    this.partNumber++;
-    const partFileUri = `${this.dir}/part-${String(this.partNumber).padStart(4, '0')}.csv`;
-    await FileSystem.writeAsStringAsync(partFileUri, this.currentRows.join('\n') + '\n');
-
-    this.currentRows = [];
-  }
-
-  async close(meta: RecordingMeta): Promise<string> {
-    await this.flush();
-
-    const FileSystem = require('expo-file-system/legacy') as typeof import('expo-file-system/legacy');
-
-    const metaUri = `${this.dir}/meta.json`;
-    await FileSystem.writeAsStringAsync(metaUri, JSON.stringify(meta));
-
+  async close(meta: RecordingMeta) {
+    if (!this.part) await this.write([]);
+    const fs = require('expo-file-system/legacy') as typeof import('expo-file-system/legacy');
+    await fs.writeAsStringAsync(`${this.dir}/meta.json`, JSON.stringify(meta));
     return this.dir;
   }
 }
-
-/**
- * Implementación en memoria para web.
- */
 class WebSink implements RecordingSink {
-  public readonly dir: string;
+  readonly dir: string;
   private rows: string[] = [];
-
   constructor(id: string) {
-    this.dir = `web-session-${id}`;
+    this.dir = id;
   }
-
-  async write(rows: string[]): Promise<void> {
-    this.rows.push(...rows);
-  }
-
-  getTotalRows(): number {
+  getTotalRows() {
     return this.rows.length;
   }
-
-  async close(meta: RecordingMeta): Promise<string> {
-    const { saveWebSession } = require('./recordingsRepo.web');
-    saveWebSession(meta.id, meta, this.rows);
+  async write(rows: string[]) {
+    this.rows.push(...rows);
+  }
+  async close(meta: RecordingMeta) {
+    const repo = require('./recordingsRepo.web') as typeof import('./recordingsRepo.web');
+    await repo.saveWebSession(meta.id, meta, this.rows);
     return this.dir;
   }
 }
 
-/**
- * Recorder — grabación de sesiones EEG en formato CSV.
- * 
- * Las filas se acumulan en memoria y se vacían a archivos segmentados
- * cada 60 s (~15,360 filas). Límite duro de 20 minutos.
- * 
- * Captura accel/gyro/fit/battery del store a 10 Hz.
- */
+/** Bounded sessions; failed writes retain their rows so stop can be retried. */
 class Recorder {
   private sink: RecordingSink | null = null;
-  private recording: boolean = false;
-  private startTime: number = 0;
-  private flushTimer: ReturnType<typeof setInterval> | null = null;
-  private rowCountTimer: ReturnType<typeof setInterval> | null = null;
-  private stateCaptureTimer: ReturnType<typeof setInterval> | null = null;
-  private unsubscribeRaw: (() => void) | null = null;
-  private unsubscribeBands: (() => void) | null = null;
-  private lastBands: BandPowerFrame | null = null;
-  private lastRaw: ChannelMap<number | null> = { TP9: null, AF7: null, AF8: null, TP10: null };
-  private lastAccel: Vec3 | null = null;
-  private lastGyro: Vec3 | null = null;
-  private lastFit: ChannelMap<FitLevel> = { TP9: 2, AF7: 2, AF8: 2, TP10: 2 };
-  private lastBattery: number | null = null;
+  private starting = false;
+  private stopping: Promise<RecordingMeta> | null = null;
+  private stoppedAt: number | null = null;
+  private recording = false;
+  private startTime = 0;
   private marker: string | null = null;
-  private pendingRows: string[] = [];
+  private source: 'muse' | 'simulation' = 'muse';
+  private pending: string[] = [];
+  private flushing: Promise<void> | null = null;
+  private timer: ReturnType<typeof setInterval> | null = null;
+  private unsubscribe: (() => void)[] = [];
 
   async start(injectedSink?: RecordingSink): Promise<void> {
+    if (this.sink || this.starting) throw new Error('Primero guarda la grabación anterior.');
     const store = useMuseStore.getState();
-    if (store.status !== 'streaming') {
-      throw new Error('No se puede grabar: no hay conexión activa');
-    }
-
-    if (injectedSink) {
-      this.sink = injectedSink;
-    } else if (Platform.OS === 'web') {
-      const id = Date.now().toString(36);
-      this.sink = new WebSink(id);
-    } else {
-      const FileSystem = require('expo-file-system/legacy') as typeof import('expo-file-system/legacy');
-      const id = Date.now().toString(36);
-      const dirUri = `${FileSystem.documentDirectory}recordings/${id}`;
-      await FileSystem.makeDirectoryAsync(dirUri, { intermediates: true });
-      this.sink = new SegmentedSink(dirUri);
-    }
-
-    this.recording = true;
-    this.startTime = Date.now();
-    this.pendingRows = [];
-
-    // Escribir cabecera
-    if (this.sink && Platform.OS !== 'web') {
-      await this.sink.write([MM_CSV_HEADER]);
-    }
-
-    // Suscribirse a muestras crudas
-    this.unsubscribeRaw = dspEngine.onRawSample((sample) => {
-      this.lastRaw[sample.channel] = sample.uv;
-      this.addRow(sample.tMs);
-    });
-
-    // Suscribirse a bandas
-    this.unsubscribeBands = dspEngine.onBands((frame) => {
-      this.lastBands = frame;
-    });
-
-    // Timer de flush cada 60 s
-    this.flushTimer = setInterval(async () => {
-      if (this.sink && this.pendingRows.length > 0) {
-        await this.sink.write(this.pendingRows);
-        this.pendingRows = [];
+    if (store.status !== 'streaming')
+      throw new Error('Conecta Muse o el simulador antes de grabar.');
+    this.starting = true;
+    try {
+      this.startTime = Date.now();
+      this.stoppedAt = null;
+      this.source = store.isSimulating ? 'simulation' : 'muse';
+      const id = `muse-${this.startTime.toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+      if (injectedSink) this.sink = injectedSink;
+      else if (Platform.OS === 'web') this.sink = new WebSink(id);
+      else {
+        const fs = require('expo-file-system/legacy') as typeof import('expo-file-system/legacy');
+        const dir = `${fs.documentDirectory}recordings/${id}`;
+        await fs.makeDirectoryAsync(dir, { intermediates: true });
+        this.sink = new SegmentedSink(dir);
       }
-    }, FLUSH_INTERVAL_MS);
-
-    // Timer de row count cada 1 s
-    this.rowCountTimer = setInterval(() => {
-      store.setRecordingRowCount(this.getRowCount());
-    }, ROW_COUNT_INTERVAL_MS);
-
-    // Timer de captura de estado cada 100 ms (10 Hz)
-    this.stateCaptureTimer = setInterval(() => {
-      this.captureState();
-    }, 100);
-
-    store.setRecording(true, this.startTime);
+      this.pending = [];
+      this.marker = null;
+      this.recording = true;
+      const append = (sample: TimedSample | SensorSample) => {
+        if (!this.recording) return;
+        this.pending.push(
+          formatRawSample(
+            { ...sample, source: sample.source || this.source },
+            this.marker,
+            this.sink?.dir.split('/').pop(),
+          ),
+        );
+        this.marker = null;
+      };
+      this.unsubscribe = [dspEngine.onRawSample(append)];
+      if (dspEngine.onSensorSample) this.unsubscribe.push(dspEngine.onSensorSample(append));
+      store.setRecording(true, this.startTime);
+      this.timer = setInterval(() => {
+        store.setRecordingRowCount((this.sink?.getTotalRows() || 0) + this.pending.length);
+        if (Date.now() - this.startTime >= 20 * 60 * 1000)
+          void this.stop().catch(() =>
+            store.setStatus(
+              'error',
+              'No se pudo guardar. Libera espacio y vuelve a detener la grabación.',
+            ),
+          );
+        else
+          void this.flush().catch(() =>
+            store.setStatus(
+              'error',
+              'No se pudo escribir. No cierres la aplicación; revisa el espacio disponible.',
+            ),
+          );
+      }, 1000);
+    } finally {
+      this.starting = false;
+    }
   }
-
-  private captureState(): void {
-    const store = useMuseStore.getState();
-    const { accel, gyro, battery } = store.telemetry;
-    const { fit, headbandOn } = store;
-
-    if (accel) {
-      this.lastAccel = { x: accel.x, y: accel.y, z: accel.z };
-    }
-    if (gyro) {
-      this.lastGyro = { x: gyro.x, y: gyro.y, z: gyro.z };
-    }
-    if (battery) {
-      this.lastBattery = battery.percent;
-    }
-    if (fit) {
-      this.lastFit = { ...fit };
-    }
+  private flush(): Promise<void> {
+    if (this.flushing) return this.flushing;
+    if (!this.sink || !this.pending.length) return Promise.resolve();
+    const rows = this.pending.splice(0);
+    this.flushing = this.sink
+      .write(rows)
+      .catch((error) => {
+        this.pending.unshift(...rows);
+        throw error;
+      })
+      .finally(() => {
+        this.flushing = null;
+      });
+    return this.flushing;
   }
-
-  async stop(): Promise<RecordingMeta> {
-    if (!this.recording || !this.sink) {
-      throw new Error('No hay grabación activa');
-    }
-
-    this.recording = false;
-
-    // Limpiar timers
-    if (this.flushTimer) {
-      clearInterval(this.flushTimer);
-      this.flushTimer = null;
-    }
-    if (this.rowCountTimer) {
-      clearInterval(this.rowCountTimer);
-      this.rowCountTimer = null;
-    }
-    if (this.stateCaptureTimer) {
-      clearInterval(this.stateCaptureTimer);
-      this.stateCaptureTimer = null;
-    }
-
-    // Desuscribirse
-    if (this.unsubscribeRaw) {
-      this.unsubscribeRaw();
-      this.unsubscribeRaw = null;
-    }
-    if (this.unsubscribeBands) {
-      this.unsubscribeBands();
-      this.unsubscribeBands = null;
-    }
-
-    const totalRows = this.sink.getTotalRows() + this.pendingRows.length;
-    const sinkDir = this.sink.dir;
-
-    // Flush final
-    if (this.pendingRows.length > 0) {
-      await this.sink.write(this.pendingRows);
-      this.pendingRows = [];
-    }
-
-    const uri = await this.sink.close({
-      id: sinkDir.split('/').pop() || '',
-      fileName: makeFileName(new Date(this.startTime)),
-      startedAtMs: this.startTime,
-      durationMs: Date.now() - this.startTime,
-      rowCount: totalRows,
-      sizeBytes: 0, // Se calculará al exportar
-      uri: sinkDir,
+  stop(): Promise<RecordingMeta> {
+    if (this.stopping) return this.stopping;
+    this.stopping = this.finish().finally(() => {
+      this.stopping = null;
     });
-    this.sink = null;
-
-    const store = useMuseStore.getState();
-    store.setRecording(false, null);
-
+    return this.stopping;
+  }
+  private async finish(): Promise<RecordingMeta> {
+    if (!this.sink) throw new Error('No hay grabación activa.');
+    this.recording = false;
+    this.stoppedAt ??= Date.now();
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+    this.unsubscribe.splice(0).forEach((remove) => remove());
+    if (this.flushing) {
+      try {
+        await this.flushing;
+      } catch {
+        /* Retry the preserved rows below. */
+      }
+    }
+    await this.flush();
+    const id = this.sink.dir.split('/').pop()!;
     const meta: RecordingMeta = {
-      id: uri.split('/').pop() || '',
-      fileName: makeFileName(new Date(this.startTime)),
+      id,
+      fileName: `${id}.csv`,
       startedAtMs: this.startTime,
-      durationMs: Date.now() - this.startTime,
-      rowCount: totalRows,
+      durationMs: this.stoppedAt - this.startTime,
+      rowCount: this.sink.getTotalRows(),
       sizeBytes: 0,
-      uri,
+      uri: this.sink.dir,
+      format: 'raw-v2',
+      source: this.source,
     };
-
+    await this.sink.close(meta);
+    this.sink = null;
+    useMuseStore.getState().setRecording(false, null);
     return meta;
   }
-
   addMarker(label?: string): void {
-    this.marker = label || `/Marker/${Date.now()}`;
-  }
-
-  private addRow(tMs: number): void {
-    if (!this.recording) return;
-
-    const store = useMuseStore.getState();
-    const rowState: RowState = {
-      timestamp: new Date(tMs),
-      rawUv: { ...this.lastRaw },
-      bands: this.lastBands,
-      accel: this.lastAccel,
-      gyro: this.lastGyro,
-      headbandOn: store.headbandOn,
-      fit: { ...this.lastFit },
-      battery: store.telemetry.battery,
-      marker: this.marker,
-    };
-
-    const row = formatRow(rowState);
-    this.pendingRows.push(row);
-    this.marker = null;
-
-    // Verificar límite de tiempo
-    const elapsed = Date.now() - this.startTime;
-    if (elapsed >= MAX_RECORDING_MIN * 60 * 1000) {
-      this.stop();
-    }
-  }
-
-  private getRowCount(): number {
-    return (this.sink?.getTotalRows() ?? 0) + this.pendingRows.length;
+    if (this.recording) this.marker = label || `M-${Date.now()}`;
   }
 }
-
 export const recorder = new Recorder();

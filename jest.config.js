@@ -1,8 +1,7 @@
+// Pure protocol/DSP/recording tests; native adapters are mocked explicitly.
 module.exports = {
-  preset: 'jest-expo',
   testEnvironment: 'node',
-  testMatch: ['**/__tests__/**/*.test.ts'],
-  transformIgnorePatterns: [
-    'node_modules/(?!((jest-)?react-native|@react-native(-community)?)|expo(nent)?|@expo(nent)?/.*|@expo-google-fonts/.*|react-navigation|@react-navigation/.*|@unimodules/.*|unimodules|sentry-expo|native-base|react-native-svg)',
-  ],
+  roots: ['<rootDir>/__tests__'],
+  testMatch: ['**/*.test.ts'],
+  moduleNameMapper: { '^@/(.*)$': '<rootDir>/$1' },
 };

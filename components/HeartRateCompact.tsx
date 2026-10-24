@@ -9,7 +9,7 @@ export function HeartRateCompact() {
 
   return (
     <View style={styles.card}>
-      <Text style={styles.label}>PULSO</Text>
+      <Text style={styles.label}>PULSO ESTIMADO</Text>
       <View style={styles.valueContainer}>
         <Text style={[styles.value, theme.typography]}>
           {heartRate ? `${heartRate} BPM` : '-- BPM'}

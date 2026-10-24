@@ -3,17 +3,27 @@ import type { RecordingMeta, TimedSample } from '@/types/muse';
 jest.mock('react-native', () => ({ Platform: { OS: 'web' } }));
 jest.mock('@/dsp/dspEngine', () => {
   let callback: ((sample: TimedSample) => void) | null = null;
-  return { dspEngine: {
-    onRawSample: (cb: (sample: TimedSample) => void) => { callback = cb; return () => { callback = null; }; },
-    onBands: () => () => {},
-    emit: (sample: TimedSample) => callback?.(sample),
-  } };
+  return {
+    dspEngine: {
+      onRawSample: (cb: (sample: TimedSample) => void) => {
+        callback = cb;
+        return () => {
+          callback = null;
+        };
+      },
+      onBands: () => () => {},
+      emit: (sample: TimedSample) => callback?.(sample),
+    },
+  };
 });
 jest.mock('@/store/useMuseStore', () => {
   const state = {
-    status: 'streaming', telemetry: { accel: null, gyro: null, battery: null },
-    fit: { TP9: 2, AF7: 2, AF8: 2, TP10: 2 }, headbandOn: false,
-    setRecording: jest.fn(), setRecordingRowCount: jest.fn(),
+    status: 'streaming',
+    telemetry: { accel: null, gyro: null, battery: null },
+    fit: { TP9: 2, AF7: 2, AF8: 2, TP10: 2 },
+    headbandOn: false,
+    setRecording: jest.fn(),
+    setRecordingRowCount: jest.fn(),
   };
   return { useMuseStore: { getState: () => state } };
 });
@@ -24,9 +34,16 @@ class MemorySink implements RecordingSink {
   readonly dir = 'test-session';
   readonly rows: string[] = [];
   metadata: RecordingMeta | null = null;
-  async write(rows: string[]) { this.rows.push(...rows); }
-  async close(meta: RecordingMeta) { this.metadata = meta; return this.dir; }
-  getTotalRows() { return this.rows.length; }
+  async write(rows: string[]) {
+    this.rows.push(...rows);
+  }
+  async close(meta: RecordingMeta) {
+    this.metadata = meta;
+    return this.dir;
+  }
+  getTotalRows() {
+    return this.rows.length;
+  }
 }
 const acquisition = dspEngine as typeof dspEngine & { emit(sample: TimedSample): void };
 
@@ -45,6 +62,12 @@ describe('Recorder lifecycle with a real injected sink', () => {
     acquisition.emit({ channel: 'TP9', uv: 99, tMs: Date.now() });
     expect(sink.rows).toHaveLength(2);
   });
+  it('does not start a second recording over an active one', async () => {
+    const sink = new MemorySink();
+    await recorder.start(sink);
+    await expect(recorder.start(new MemorySink())).rejects.toThrow('anterior');
+    await recorder.stop();
+  });
   it('writes each named marker only on its next sample', async () => {
     const sink = new MemorySink();
     await recorder.start(sink);
@@ -57,5 +80,30 @@ describe('Recorder lifecycle with a real injected sink', () => {
     expect(sink.rows[0]).toMatch(/,M1$/);
     expect(sink.rows[1]).not.toMatch(/,M[12]$/);
     expect(sink.rows[2]).toMatch(/,M2$/);
+  });
+  it('shares concurrent stop calls and closes the sink once', async () => {
+    const sink = new MemorySink();
+    const close = jest.spyOn(sink, 'close');
+    await recorder.start(sink);
+    acquisition.emit({ channel: 'TP9', uv: 12, tMs: Date.now() });
+    const first = recorder.stop();
+    expect(recorder.stop()).toBe(first);
+    const meta = await first;
+    expect(meta.rowCount).toBe(1);
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+  it('retains failed writes for retry without extending acquisition duration', async () => {
+    const sink = new MemorySink();
+    jest.spyOn(sink, 'write').mockRejectedValueOnce(new Error('disk full'));
+    await recorder.start(sink);
+    acquisition.emit({ channel: 'AF7', uv: 24, tMs: Date.now() });
+    jest.advanceTimersByTime(500);
+    await expect(recorder.stop()).rejects.toThrow('disk full');
+    await expect(recorder.start(new MemorySink())).rejects.toThrow('anterior');
+    jest.advanceTimersByTime(10000);
+    const meta = await recorder.stop();
+    expect(meta.durationMs).toBe(500);
+    expect(meta.rowCount).toBe(1);
+    expect(sink.rows).toHaveLength(1);
   });
 });

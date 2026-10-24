@@ -8,6 +8,15 @@ export function highPassDisplayWindow(samples: Float32Array, count: number): voi
   const alpha = 0.9879;
   for (let i = 0; i < count; i++) {
     const input = samples[i];
+    if (!Number.isFinite(input)) {
+      previousInput = NaN;
+      previousOutput = 0;
+      continue;
+    }
+    if (!Number.isFinite(previousInput)) {
+      previousInput = input;
+      previousOutput = 0;
+    }
     previousOutput = alpha * (previousOutput + input - previousInput);
     samples[i] = previousOutput;
     previousInput = input;

@@ -1,4 +1,12 @@
-import { FitLevel, MindMonitorHsi, BandMap, ChannelMap, BandPowerFrame, BatteryReading, Vec3 } from '@/types/muse';
+import {
+  FitLevel,
+  MindMonitorHsi,
+  BandMap,
+  ChannelMap,
+  BandPowerFrame,
+  BatteryReading,
+  Vec3,
+} from '@/types/muse';
 import { EEG_CHANNELS, BAND_NAMES } from '@/types/muse';
 
 /**
@@ -19,17 +27,43 @@ import { EEG_CHANNELS, BAND_NAMES } from '@/types/muse';
  */
 export const MM_CSV_HEADER = [
   'TimeStamp',
-  'Delta_TP9', 'Delta_AF7', 'Delta_AF8', 'Delta_TP10',
-  'Theta_TP9', 'Theta_AF7', 'Theta_AF8', 'Theta_TP10',
-  'Alpha_TP9', 'Alpha_AF7', 'Alpha_AF8', 'Alpha_TP10',
-  'Beta_TP9', 'Beta_AF7', 'Beta_AF8', 'Beta_TP10',
-  'Gamma_TP9', 'Gamma_AF7', 'Gamma_AF8', 'Gamma_TP10',
-  'RAW_TP9', 'RAW_AF7', 'RAW_AF8', 'RAW_TP10',
-  'Accelerometer_X', 'Accelerometer_Y', 'Accelerometer_Z',
-  'Gyro_X', 'Gyro_Y', 'Gyro_Z',
+  'Delta_TP9',
+  'Delta_AF7',
+  'Delta_AF8',
+  'Delta_TP10',
+  'Theta_TP9',
+  'Theta_AF7',
+  'Theta_AF8',
+  'Theta_TP10',
+  'Alpha_TP9',
+  'Alpha_AF7',
+  'Alpha_AF8',
+  'Alpha_TP10',
+  'Beta_TP9',
+  'Beta_AF7',
+  'Beta_AF8',
+  'Beta_TP10',
+  'Gamma_TP9',
+  'Gamma_AF7',
+  'Gamma_AF8',
+  'Gamma_TP10',
+  'RAW_TP9',
+  'RAW_AF7',
+  'RAW_AF8',
+  'RAW_TP10',
+  'Accelerometer_X',
+  'Accelerometer_Y',
+  'Accelerometer_Z',
+  'Gyro_X',
+  'Gyro_Y',
+  'Gyro_Z',
   'HeadBandOn',
-  'HSI_TP9', 'HSI_AF7', 'HSI_AF8', 'HSI_TP10',
-  'Battery', 'Elements',
+  'HSI_TP9',
+  'HSI_AF7',
+  'HSI_AF8',
+  'HSI_TP10',
+  'Battery',
+  'Elements',
 ].join(',');
 
 /**
@@ -58,7 +92,7 @@ export interface RowState {
 
 /**
  * Formatea una fila CSV según el formato de Mind Monitor.
- * 
+ *
  * Reglas:
  * - TimeStamp: yyyy-MM-dd HH:mm:ss.SSS en hora local
  * - RAW_*: 3 decimales (µV)
@@ -132,4 +166,50 @@ function formatTimestamp(d: Date): string {
 export function makeFileName(d: Date): string {
   const pad = (n: number) => String(n).padStart(2, '0');
   return `mindMonitor_${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}--${pad(d.getHours())}-${pad(d.getMinutes())}-${pad(d.getSeconds())}.csv`;
+}
+
+/** Raw v2: one row per received sensor sample, not artificially aligned channels. */
+export const RAW_CSV_HEADER =
+  'received_at_utc,received_monotonic_ms,acquisition_epoch,source,stream,channel,sequence,sample_index,value,x,y,z,unit,is_duplicate,is_out_of_order,gap_packets,recording_id,marker';
+const cell = (value: string | number | boolean | undefined | null) => {
+  const text = value === undefined || value === null ? '' : String(value);
+  return /[",\r\n]/.test(text) ? '"' + text.replace(/"/g, '""') + '"' : text;
+};
+export function formatRawSample(
+  sample: import('@/types/muse').TimedSample | import('@/types/muse').SensorSample,
+  marker: string | null = null,
+  recordingId?: string,
+): string {
+  const eeg = 'uv' in sample;
+  const sensor = 'stream' in sample ? sample : null;
+  return [
+    new Date(eeg ? sample.tMs : sample.receivedAtMs).toISOString(),
+    sample.receivedMonotonicMs,
+    sample.acquisitionEpoch,
+    sample.source,
+    eeg ? 'eeg' : sample.stream,
+    eeg ? sample.channel : '',
+    sample.sequence,
+    sample.sampleIndex,
+    eeg ? sample.uv : sample.value,
+    sensor?.axes?.x,
+    sensor?.axes?.y,
+    sensor?.axes?.z,
+    eeg
+      ? 'uV'
+      : sample.stream === 'accel'
+        ? 'g'
+        : sample.stream === 'gyro'
+          ? 'deg/s'
+          : sample.stream === 'battery'
+            ? '%'
+            : 'ADC',
+    sample.isDuplicate,
+    sample.isOutOfOrder,
+    sample.gapPackets,
+    recordingId,
+    marker,
+  ]
+    .map(cell)
+    .join(',');
 }

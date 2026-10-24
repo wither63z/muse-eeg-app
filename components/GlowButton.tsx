@@ -3,10 +3,24 @@ import type { StyleProp, ViewStyle } from 'react-native';
 import { TouchableOpacity, Text, StyleSheet, View } from 'react-native';
 import { theme } from '@/constants/Theme';
 
-export function GlowButton({ label, onPress, accent = theme.colors.bands.beta, style }: { label: string; onPress?: () => void; accent?: string; style?: StyleProp<ViewStyle> }) {
+export function GlowButton({
+  label,
+  onPress,
+  accent = theme.colors.bands.beta,
+  style,
+  disabled = false,
+}: {
+  label: string;
+  onPress?: () => void;
+  accent?: string;
+  style?: StyleProp<ViewStyle>;
+  disabled?: boolean;
+}) {
   return (
     <TouchableOpacity
       activeOpacity={0.75}
+      disabled={disabled}
+      accessibilityRole="button"
       onPress={onPress}
       style={[styles.base, { borderColor: accent, backgroundColor: accent + '0f' }, style]}
     >

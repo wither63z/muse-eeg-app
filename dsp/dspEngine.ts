@@ -1,5 +1,24 @@
-import { EegPacket, EegChannel, TimedSample, BandPowerFrame, BandMap, ChannelMap, FitCheck, PpgSample } from '@/types/muse';
-import { FFT_SIZE, SCOPE_HISTORY_SECONDS, SAMPLE_RATE_HZ, BANDS, BAND_UPDATE_HZ, FIT_UPDATE_HZ, MAINS_HZ, PPG_SAMPLE_RATE_HZ } from '@/constants/muse';
+import {
+  EegPacket,
+  EegChannel,
+  TimedSample,
+  BandPowerFrame,
+  BandMap,
+  ChannelMap,
+  FitCheck,
+  PpgSample,
+  SensorSample,
+} from '@/types/muse';
+import {
+  FFT_SIZE,
+  SCOPE_HISTORY_SECONDS,
+  SAMPLE_RATE_HZ,
+  BANDS,
+  BAND_UPDATE_HZ,
+  FIT_UPDATE_HZ,
+  MAINS_HZ,
+  PPG_SAMPLE_RATE_HZ,
+} from '@/constants/muse';
 import { RingBuffer } from './ringBuffer';
 import { Fft, hannWindow } from './fft';
 import { estimateHeartRate } from './heartRate';
@@ -10,11 +29,11 @@ const EEG_CHANNELS: EegChannel[] = ['TP9', 'AF7', 'AF8', 'TP10'];
 
 /**
  * DspEngine — procesamiento de señales en tiempo real.
- * 
+ *
  * Buffers por canal:
  * - fftBuf: RingBuffer(256) — ventana de análisis (1 s)
  * - scopeBuf: RingBuffer(256 * SCOPE_HISTORY_SECONDS) — historial para osciloscopio
- * 
+ *
  * Las muestras de 256 Hz nunca pasan por React ni Zustand.
  * El engine publica bandas (10 Hz) y fit (2 Hz) directamente al store.
  */
@@ -24,10 +43,6 @@ class DspEngine {
   private fft: Fft;
   private window: Float32Array;
   private sumW2: number;
-  private xBuf: Float32Array;
-  private imBuf: Float32Array;
-  private psdBuf: Float32Array;
-  private fillBuf: Float32Array;
   private bandTimer: ReturnType<typeof setInterval> | null = null;
   private fitTimer: ReturnType<typeof setInterval> | null = null;
   private rawSampleCallbacks: Set<(s: TimedSample) => void> = new Set();
@@ -35,16 +50,23 @@ class DspEngine {
   private lastFit: ReturnType<typeof computeFit> | null = null;
   private pendingCounters: ChannelMap<number> = { TP9: 0, AF7: 0, AF8: 0, TP10: 0 };
   // Contadores de histéresis: exigen evaluaciones consecutivas antes de cambiar cada nivel.
-  private highPassState: Map<EegChannel, { yPrev: number; xPrev: number }> = new Map();
-  // Estado heredado, actualmente sin uso en el filtrado visual.
-  // El osciloscopio filtra copias mediante displaySignal.ts.
   private packetsReceived: ChannelMap<number> = { TP9: 0, AF7: 0, AF8: 0, TP10: 0 };
   private packetsDropped: ChannelMap<number> = { TP9: 0, AF7: 0, AF8: 0, TP10: 0 };
   private statsTimer: ReturnType<typeof setInterval> | null = null;
-  private sequenceUnwrappers: Map<EegChannel, { lastSeq: number | null; wraps: number; lastAbsPacket: number | null }> = new Map();
-  private lastValidSample: Map<EegChannel, number> = new Map();
-    // Última muestra válida por canal, usada para gap filling (repetir muestra
-    // en lugar de cero cuando hay paquetes perdidos entre 1 y 49 paquetes (12 muestras por paquete)).
+  private sequenceUnwrappers: Map<
+    EegChannel,
+    { lastSeq: number | null; wraps: number; lastAbsPacket: number | null }
+  > = new Map();
+  private acquisitionEpoch = 0;
+  private source: 'muse' | 'simulation' = 'muse';
+  private sensorSequences = new Map<
+    string,
+    { sequence: number; duplicate: boolean; late: boolean; gap: number }
+  >();
+  private sensorCallbacks = new Set<(sample: SensorSample) => void>();
+  private lastPacketMs = new Map<EegChannel, number>();
+  private duplicates: ChannelMap<number> = { TP9: 0, AF7: 0, AF8: 0, TP10: 0 };
+  private outOfOrder: ChannelMap<number> = { TP9: 0, AF7: 0, AF8: 0, TP10: 0 };
 
   // PPG (ritmo cardíaco)
   private ppgBuf: RingBuffer;
@@ -52,23 +74,18 @@ class DspEngine {
   private lastPpgReceivedAtMs = 0;
   private ppgLastSequence: number | null = null;
   private ppgAnalysisWindow = new Float32Array(PPG_SAMPLE_RATE_HZ * 8);
-    // Ventana de análisis para estimación de BPM desde PPG.
-    // Tamaño: 8 segundos a 64 Hz (PPG_SAMPLE_RATE_HZ), suficientes picos
-    // para el algoritmo de detección de latidos.
+  // Ventana de análisis para estimación de BPM desde PPG.
+  // Tamaño: 8 segundos a 64 Hz (PPG_SAMPLE_RATE_HZ), suficientes picos
+  // para el algoritmo de detección de latidos.
 
   constructor() {
     this.fft = new Fft(FFT_SIZE);
     this.window = hannWindow(FFT_SIZE);
     this.sumW2 = this.window.reduce((sum, w) => sum + w * w, 0);
-    this.xBuf = new Float32Array(FFT_SIZE);
-    this.imBuf = new Float32Array(FFT_SIZE);
-    this.psdBuf = new Float32Array(FFT_SIZE / 2 + 1);
-    this.fillBuf = new Float32Array(60 * 12);
 
     for (const ch of EEG_CHANNELS) {
       this.fftBuf.set(ch, new RingBuffer(FFT_SIZE));
       this.scopeBuf.set(ch, new RingBuffer(SAMPLE_RATE_HZ * SCOPE_HISTORY_SECONDS));
-      this.highPassState.set(ch, { yPrev: 0, xPrev: 0 });
       this.sequenceUnwrappers.set(ch, { lastSeq: null, wraps: 0, lastAbsPacket: null });
     }
 
@@ -78,61 +95,80 @@ class DspEngine {
 
   pushEeg(packet: EegPacket): void {
     const { channel, sequence, samplesUv } = packet;
-    const fftBuffer = this.fftBuf.get(channel);
-    const scopeBuffer = this.scopeBuf.get(channel);
+    const fftBuffer = this.fftBuf.get(channel),
+      scopeBuffer = this.scopeBuf.get(channel);
     if (!fftBuffer || !scopeBuffer) return;
-
-    // Track sequence for stats and gap filling
-    const gap = this.trackSequence(channel, sequence);
-
-    // Rellenar huecos repitiendo la última muestra válida (no ceros)
-    if (gap > 0 && gap < 50) {
-      const lastSample = this.lastValidSample.get(channel) ?? 0;
-      const fillSamples = new Float32Array(gap * 12);
-      fillSamples.fill(lastSample);
-      fftBuffer.pushMany(fillSamples);
-      scopeBuffer.pushMany(fillSamples);
-
-      // Notificar a callbacks de raw samples para las muestras de relleno
-      const now = Date.now();
-      for (let i = 0; i < fillSamples.length; i++) {
-        const sample: TimedSample = {
-          channel,
-          tMs: now,
-          uv: fillSamples[i],
-        };
-        for (const cb of this.rawSampleCallbacks) {
-          cb(sample);
-        }
+    const previous = this.sequenceUnwrappers.get(channel)!;
+    const delta = previous.lastSeq === null ? 1 : (sequence - previous.lastSeq + 65536) % 65536;
+    const duplicate = delta === 0,
+      late = delta >= 32768;
+    const gap = duplicate || late ? 0 : delta - 1;
+    if (duplicate) this.duplicates[channel]++;
+    else if (late) this.outOfOrder[channel]++;
+    else {
+      previous.lastSeq = sequence;
+      this.packetsReceived[channel]++;
+      this.packetsDropped[channel] += gap;
+      this.lastPacketMs.set(channel, performance.now());
+      if (gap) {
+        fftBuffer.clear();
+        scopeBuffer.push(NaN);
       }
+      fftBuffer.pushMany(samplesUv);
+      scopeBuffer.pushMany(samplesUv);
     }
-
-    // Empujar muestras actuales a ambos buffers
-    fftBuffer.pushMany(samplesUv);
-    scopeBuffer.pushMany(samplesUv);
-
-    // Guardar última muestra válida para futuro gap filling
-    this.lastValidSample.set(channel, samplesUv[samplesUv.length - 1]);
-
-    // Notificar a callbacks de raw samples (para recorder)
-    const now = Date.now();
+    // Raw notifications remain observable, with flags; no fabricated gap samples.
     for (let i = 0; i < samplesUv.length; i++) {
       const sample: TimedSample = {
         channel,
-        tMs: now,
         uv: samplesUv[i],
+        tMs: packet.receivedAtMs,
+        sequence,
+        sampleIndex: i,
+        acquisitionEpoch: this.acquisitionEpoch,
+        receivedMonotonicMs: packet.receivedMonotonicMs,
+        isDuplicate: duplicate,
+        isOutOfOrder: late,
+        gapPackets: i === 0 ? gap : 0,
+        source: this.source,
       };
-      for (const cb of this.rawSampleCallbacks) {
-        cb(sample);
-      }
+      for (const cb of this.rawSampleCallbacks) cb(sample);
     }
+  }
+  pushSensor(sample: SensorSample): void {
+    const previous = this.sensorSequences.get(sample.stream);
+    if (sample.sampleIndex === 0) {
+      const delta = previous ? (sample.sequence - previous.sequence + 65536) % 65536 : 1;
+      const duplicate = delta === 0,
+        late = delta >= 32768;
+      this.sensorSequences.set(sample.stream, {
+        sequence: duplicate || late ? previous!.sequence : sample.sequence,
+        duplicate,
+        late,
+        gap: duplicate || late ? 0 : delta - 1,
+      });
+    }
+    const flags = this.sensorSequences.get(sample.stream);
+    const row = {
+      ...sample,
+      isDuplicate: flags?.duplicate,
+      isOutOfOrder: flags?.late,
+      gapPackets: sample.stream === 'ppg' ? (sample.sampleIndex === 0 ? flags?.gap : 0) : undefined,
+      acquisitionEpoch: this.acquisitionEpoch,
+      source: this.source,
+    };
+    for (const cb of this.sensorCallbacks) cb(row);
+  }
+  onSensorSample(cb: (sample: SensorSample) => void): () => void {
+    this.sensorCallbacks.add(cb);
+    return () => this.sensorCallbacks.delete(cb);
   }
 
   pushPpg(packet: PpgSample): void {
     // A missing/duplicate packet must not compress the optical time axis.
     if (this.ppgLastSequence !== null) {
       const delta = (packet.sequence - this.ppgLastSequence + 65536) % 65536;
-      if (delta === 0 || delta > 32768) return;
+      if (delta === 0 || delta >= 32768) return;
       if (delta !== 1 || packet.receivedAtMs - this.lastPpgReceivedAtMs > 1000) {
         this.ppgBuf.clear();
         this.ppgSampleCount = 0;
@@ -148,8 +184,13 @@ class DspEngine {
     if (this.ppgSampleCount >= PPG_SAMPLE_RATE_HZ) {
       this.ppgSampleCount %= PPG_SAMPLE_RATE_HZ;
       const count = this.ppgBuf.copyLast(this.ppgAnalysisWindow.length, this.ppgAnalysisWindow);
-      useMuseStore.getState().setHeartRate(count === this.ppgAnalysisWindow.length
-        ? estimateHeartRate(this.ppgAnalysisWindow) : null);
+      useMuseStore
+        .getState()
+        .setHeartRate(
+          count === this.ppgAnalysisWindow.length
+            ? estimateHeartRate(this.ppgAnalysisWindow)
+            : null,
+        );
     }
   }
 
@@ -158,38 +199,12 @@ class DspEngine {
     return this.ppgBuf.copyLast(n, out);
   }
 
-  private trackSequence(channel: EegChannel, sequence: number): number {
-    const unwrapper = this.sequenceUnwrappers.get(channel);
-    if (!unwrapper) return 0;
-
-    if (unwrapper.lastSeq === null) {
-      unwrapper.lastSeq = sequence;
-      unwrapper.lastAbsPacket = sequence;
-      this.packetsReceived[channel]++;
-      return 0;
-    }
-
-    // Detectar wrap
-    if (sequence < unwrapper.lastSeq - 32768) {
-      unwrapper.wraps++;
-    }
-
-    const absPacket = unwrapper.wraps * 65536 + sequence;
-    const gap = unwrapper.lastAbsPacket !== null ? absPacket - unwrapper.lastAbsPacket - 1 : 0;
-
-    if (gap > 0 && gap < 50) {
-      // Paquetes perdidos
-      this.packetsDropped[channel] += gap;
-    }
-
-    unwrapper.lastSeq = sequence;
-    unwrapper.lastAbsPacket = absPacket;
-    this.packetsReceived[channel]++;
-    return gap;
-  }
-
-  start(): void {
+  start(source: 'muse' | 'simulation' = 'muse'): void {
     this.stop();
+    this.acquisitionEpoch++;
+    this.source = source;
+    this.lastPacketMs.clear();
+    this.sensorSequences.clear();
     this.ppgBuf.clear();
     this.ppgLastSequence = null;
     this.lastFit = null;
@@ -200,7 +215,8 @@ class DspEngine {
       this.fftBuf.get(ch)?.clear();
       this.scopeBuf.get(ch)?.clear();
       this.sequenceUnwrappers.set(ch, { lastSeq: null, wraps: 0, lastAbsPacket: null });
-      this.lastValidSample.delete(ch);
+      this.duplicates[ch] = 0;
+      this.outOfOrder[ch] = 0;
       this.packetsReceived[ch] = 0;
       this.packetsDropped[ch] = 0;
     }
@@ -262,7 +278,7 @@ class DspEngine {
     const packetsInInterval = currentTotal - lastTotal;
 
     // Tasa efectiva: paquetes por segundo / paquetes esperados por segundo * 256 Hz
-    const effectiveRateHz = packetsInInterval * 12 / (4 * elapsed);
+    const effectiveRateHz = (packetsInInterval * 12) / (4 * elapsed);
 
     this.lastStatsTime = now;
     this.lastPacketsReceived = { ...this.packetsReceived };
@@ -271,6 +287,8 @@ class DspEngine {
       packetsReceived: { ...this.packetsReceived },
       packetsDropped: { ...this.packetsDropped },
       effectiveRateHz,
+      packetsDuplicate: { ...this.duplicates },
+      packetsOutOfOrder: { ...this.outOfOrder },
     });
   }
 
@@ -292,6 +310,16 @@ class DspEngine {
   }
 
   private computeBands(): void {
+    if (
+      EEG_CHANNELS.some(
+        (ch) =>
+          (this.fftBuf.get(ch)?.count || 0) < FFT_SIZE ||
+          performance.now() - (this.lastPacketMs.get(ch) ?? -Infinity) > 1500,
+      )
+    ) {
+      useMuseStore.getState().setBands(null);
+      return;
+    }
     const tMs = Date.now();
     const absoluteLog: ChannelMap<BandMap<number>> = {} as ChannelMap<BandMap<number>>;
     const relative: ChannelMap<BandMap<number>> = {} as ChannelMap<BandMap<number>>;
@@ -333,9 +361,8 @@ class DspEngine {
 
       for (const band of BANDS) {
         const kLow = Math.ceil(band.lowHz / df);
-        const kHigh = band.name === 'gamma'
-          ? Math.floor(band.highHz / df)
-          : Math.ceil(band.highHz / df) - 1;
+        const kHigh =
+          band.name === 'gamma' ? Math.floor(band.highHz / df) : Math.ceil(band.highHz / df) - 1;
 
         let sum = 0;
         for (let k = kLow; k <= kHigh && k <= FFT_SIZE / 2; k++) {
@@ -374,7 +401,11 @@ class DspEngine {
 
     for (const ch of EEG_CHANNELS) {
       const buffer = this.fftBuf.get(ch);
-      if (!buffer || buffer.count < FFT_SIZE) {
+      if (
+        !buffer ||
+        buffer.count < FFT_SIZE ||
+        performance.now() - (this.lastPacketMs.get(ch) ?? -Infinity) > 1500
+      ) {
         windows[ch] = new Float32Array(0);
         continue;
       }

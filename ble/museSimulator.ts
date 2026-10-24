@@ -6,10 +6,10 @@ import { useMuseStore } from '@/store/useMuseStore';
 const CHANNELS: EegChannel[] = ['TP9', 'AF7', 'AF8', 'TP10'];
 
 const FREQS: Record<EegChannel, number> = {
-  TP9: 10,   // Alpha
-  AF7: 20,   // Beta
-  AF8: 40,   // Gamma
-  TP10: 6,   // Theta
+  TP9: 10, // Alpha
+  AF7: 20, // Beta
+  AF8: 40, // Gamma
+  TP10: 6, // Theta
 };
 
 const NOISE_LEVEL = 5; // 5 µV noise
@@ -23,6 +23,7 @@ export class MuseSimulator {
   private startTime = 0;
   private sampleCount = 0;
   private ppgSampleCount = 0;
+  private telemetrySequence = 0;
 
   start(): void {
     if (this.interval) return;
@@ -32,6 +33,7 @@ export class MuseSimulator {
     this.sequence = 0;
     this.ppgSampleCount = 0;
     this.ppgSequence = 0;
+    this.telemetrySequence = 0;
 
     // Packet interval: 1000 / (256/12) = 46.875ms
     const intervalMs = (1000 * SAMPLES_PER_EEG_PACKET) / SAMPLE_RATE_HZ;
@@ -44,8 +46,8 @@ export class MuseSimulator {
       this.generateTelemetry();
     }, 1000); // 1 Hz telemetry
 
-    // PPG: 3 muestras por paquete a 64 Hz → intervalo ≈ 46.875 ms
-    const ppgIntervalMs = (1000 * 3) / PPG_SAMPLE_RATE_HZ;
+    // Same six-sample packet layout as the classic Muse optical stream.
+    const ppgIntervalMs = (1000 * 6) / PPG_SAMPLE_RATE_HZ;
     this.ppgInterval = setInterval(() => {
       this.generatePpg();
     }, ppgIntervalMs);
@@ -90,6 +92,7 @@ export class MuseSimulator {
         sequence: this.sequence,
         samplesUv,
         receivedAtMs: now,
+        receivedMonotonicMs: performance.now(),
       };
 
       dspEngine.pushEeg(packet);
@@ -125,51 +128,56 @@ export class MuseSimulator {
     };
 
     store.setMotion(accel, gyro, now);
+    const mono = performance.now(),
+      sequence = this.telemetrySequence++;
+    dspEngine.pushSensor({
+      stream: 'battery',
+      sequence,
+      sampleIndex: 0,
+      value: batteryPercent,
+      receivedAtMs: now,
+      receivedMonotonicMs: mono,
+    });
+    dspEngine.pushSensor({
+      stream: 'accel',
+      sequence,
+      sampleIndex: 0,
+      axes: accel,
+      receivedAtMs: now,
+      receivedMonotonicMs: mono,
+    });
+    dspEngine.pushSensor({
+      stream: 'gyro',
+      sequence,
+      sampleIndex: 0,
+      axes: gyro,
+      receivedAtMs: now,
+      receivedMonotonicMs: mono,
+    });
   }
 
   private generatePpg(): void {
-    const now = Date.now();
-    const t = this.ppgSampleCount / PPG_SAMPLE_RATE_HZ;
-
-    // Simular señal PPG: onda tipo pulso cardíaco (~70 BPM = ~857ms período)
-    const heartRate = 70; // BPM
-    const period = 60000 / heartRate; // ms
-    const phase = (t * 1000) % period;
-
-    // Generar 3 muestras
-    const samples: [number, number, number] = [0, 0, 0];
-    for (let i = 0; i < 3; i++) {
-      const sampleTime = t + i / PPG_SAMPLE_RATE_HZ;
-      const samplePhase = (sampleTime * 1000) % period;
-      const normalizedPhase = samplePhase / period;
-
-      // Forma de onda PPG realista: pico rápido + dicrotico notch + decaimiento
-      let value = 0;
-      if (normalizedPhase < 0.2) {
-        // Subida sistólica
-        value = Math.sin(normalizedPhase / 0.2 * Math.PI / 2);
-      } else if (normalizedPhase < 0.35) {
-        // Pico y notch dicrotico
-        value = Math.cos((normalizedPhase - 0.2) / 0.15 * Math.PI / 2) * 0.8;
-      } else if (normalizedPhase < 0.8) {
-        // Decaimiento diastólico
-        value = 0.3 * Math.exp(-(normalizedPhase - 0.35) / 0.45 * 3);
-      }
-      // Ruido fisiológico
-      value += (Math.random() - 0.5) * 0.05;
-      // Escalar a rango típico ADC (signed 24-bit range)
-      samples[i as 0 | 1 | 2] = Math.round(value * 100000);
-    }
-
-    const packet: PpgSample = {
-      sequence: this.ppgSequence,
-      samples,
-      receivedAtMs: now,
-    };
-
-    dspEngine.pushPpg(packet);
-
-    this.ppgSampleCount += 3;
+    const now = Date.now(),
+      mono = performance.now();
+    const samples = Array.from({ length: 6 }, (_, i) =>
+      Math.round(
+        100000 +
+          5000 *
+            Math.sin((2 * Math.PI * (70 / 60) * (this.ppgSampleCount + i)) / PPG_SAMPLE_RATE_HZ),
+      ),
+    );
+    dspEngine.pushPpg({ sequence: this.ppgSequence, samples, receivedAtMs: now });
+    samples.forEach((value, sampleIndex) =>
+      dspEngine.pushSensor({
+        stream: 'ppg',
+        sequence: this.ppgSequence,
+        sampleIndex,
+        value,
+        receivedAtMs: now,
+        receivedMonotonicMs: mono,
+      }),
+    );
+    this.ppgSampleCount += 6;
     this.ppgSequence = (this.ppgSequence + 1) % 65536;
   }
 }

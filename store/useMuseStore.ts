@@ -1,7 +1,16 @@
 import { create } from 'zustand';
-import { subscribeWithSelector, persist, createJSONStorage } from 'zustand/middleware';
-import { Platform } from 'react-native';
-import { MuseStore, ConnectionStatus, MuseDeviceInfo, BatteryReading, Vec3, FitCheck, BandPowerFrame, StreamStats, RecordingMeta } from '@/types/muse';
+import { subscribeWithSelector } from 'zustand/middleware';
+import {
+  MuseStore,
+  ConnectionStatus,
+  MuseDeviceInfo,
+  BatteryReading,
+  Vec3,
+  FitCheck,
+  BandPowerFrame,
+  StreamStats,
+  RecordingMeta,
+} from '@/types/muse';
 
 /**
  * Store de Zustand — solo estado lento (≤10 Hz).
@@ -51,69 +60,48 @@ const INITIAL_STATE = {
 };
 
 export const useMuseStore = create<MuseStore>()(
-  subscribeWithSelector(
-    persist(
-      (set) => ({
-        ...INITIAL_STATE,
+  subscribeWithSelector((set) => ({
+    ...INITIAL_STATE,
 
-        // Acciones
-        setStatus: (status: ConnectionStatus, errorMessage?: string | null) =>
-          set({ status, errorMessage: errorMessage ?? null }),
+    // Acciones
+    setStatus: (status: ConnectionStatus, errorMessage?: string | null) =>
+      set({ status, errorMessage: errorMessage ?? null }),
 
-        setDiscovered: (devices: MuseDeviceInfo[]) =>
-          set({ discovered: devices }),
+    setDiscovered: (devices: MuseDeviceInfo[]) => set({ discovered: devices }),
 
-        setDevice: (device: MuseDeviceInfo | null) =>
-          set({ device }),
+    setDevice: (device: MuseDeviceInfo | null) => set({ device }),
 
-        setBattery: (b: BatteryReading) =>
-          set((state) => ({
-            telemetry: { ...state.telemetry, battery: b },
-          })),
+    setBattery: (b: BatteryReading) =>
+      set((state) => ({
+        telemetry: { ...state.telemetry, battery: b },
+      })),
 
-        setMotion: (accel: Vec3 | null, gyro: Vec3 | null, tMs: number) =>
-          set((state) => ({
-            telemetry: {
-              ...state.telemetry,
-              accel: accel ? { ...accel, tMs } : state.telemetry.accel,
-              gyro: gyro ? { ...gyro, tMs } : state.telemetry.gyro,
-            },
-          })),
+    setMotion: (accel: Vec3 | null, gyro: Vec3 | null, tMs: number) =>
+      set((state) => ({
+        telemetry: {
+          ...state.telemetry,
+          accel: accel ? { ...accel, tMs } : state.telemetry.accel,
+          gyro: gyro ? { ...gyro, tMs } : state.telemetry.gyro,
+        },
+      })),
 
-        setFit: (fit: FitCheck) =>
-          set({ fit }),
+    setFit: (fit: FitCheck) => set({ fit }),
 
-        setBands: (frame: BandPowerFrame) =>
-          set({ bands: frame }),
+    setBands: (frame: BandPowerFrame | null) => set({ bands: frame }),
 
-        setHeartRate: (bpm: number | null) =>
-          set({ heartRate: bpm }),
+    setHeartRate: (bpm: number | null) => set({ heartRate: bpm }),
 
-        setStats: (stats: StreamStats) =>
-          set({ stats }),
+    setStats: (stats: StreamStats) => set({ stats }),
 
-        setRecording: (active: boolean, startedAtMs: number | null) =>
-          set({ isRecording: active, recordingStartedAtMs: startedAtMs }),
+    setRecording: (active: boolean, startedAtMs: number | null) =>
+      set({ isRecording: active, recordingStartedAtMs: startedAtMs }),
 
-        setSimulating: (active: boolean) =>
-          set({ isSimulating: active }),
+    setSimulating: (active: boolean) => set({ isSimulating: active }),
 
-        setRecordingRowCount: (n: number) =>
-          set({ recordingRowCount: n }),
+    setRecordingRowCount: (n: number) => set({ recordingRowCount: n }),
 
-        setRecordings: (list: RecordingMeta[]) =>
-          set({ recordings: list }),
+    setRecordings: (list: RecordingMeta[]) => set({ recordings: list }),
 
-        reset: () => set((state) => ({ ...INITIAL_STATE, recordings: state.recordings })),
-      }),
-      {
-        name: 'muse-storage',
-        storage:
-          Platform.OS === 'web' ? createJSONStorage(() => localStorage) : undefined,
-        partialize: (state) => ({
-          status: state.status, // Guardar solo estado ligero
-        }),
-      }
-    )
-  )
+    reset: () => set((state) => ({ ...INITIAL_STATE, recordings: state.recordings })),
+  })),
 );

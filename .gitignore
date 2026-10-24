@@ -39,3 +39,33 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# Local instructions, credentials, recordings and generated evidence stay private.
+/AGENTS.md
+/.vscode/
+/.claude/
+/.superpowers/
+/CLAUDE*.md
+/CONTINUAR*.md
+/Claude-*.cmd
+/Memory.md
+/RECUPERAR-*.txt
+.env
+.env.*
+!.env.example
+*.log
+*.csv
+*.edf
+*.fif
+*.zip
+/coverage/
+/test-results/
+/playwright-report/
+/evidence/
+
+/recordings/
+/data/
+/credentials.json
+/google-services.json
+/GoogleService-Info.plist
+*.keystore

@@ -12,6 +12,7 @@ export interface EegPacket {
   samplesUv: Float32Array;
   /** Date.now() al recibir la notificación BLE. */
   receivedAtMs: number;
+  receivedMonotonicMs?: number;
 }
 
 /** Muestra con timestamp absoluto, tras desenvolver secuencia. */
@@ -19,6 +20,29 @@ export interface TimedSample {
   channel: EegChannel;
   tMs: number;
   uv: number;
+  sequence?: number;
+  sampleIndex?: number;
+  acquisitionEpoch?: number;
+  receivedMonotonicMs?: number;
+  isDuplicate?: boolean;
+  isOutOfOrder?: boolean;
+  gapPackets?: number;
+  source?: 'muse' | 'simulation';
+}
+
+export interface SensorSample {
+  stream: 'ppg' | 'accel' | 'gyro' | 'battery';
+  sequence: number;
+  sampleIndex: number;
+  receivedAtMs: number;
+  receivedMonotonicMs: number;
+  value?: number;
+  axes?: Vec3;
+  acquisitionEpoch?: number;
+  source?: 'muse' | 'simulation';
+  isDuplicate?: boolean;
+  isOutOfOrder?: boolean;
+  gapPackets?: number;
 }
 
 // ───────────── Fit Check ─────────────
@@ -35,8 +59,8 @@ export type BandMap<T> = Record<BandName, T>;
 
 export interface BandDef {
   name: BandName;
-  lowHz: number;   // inclusivo
-  highHz: number;  // exclusivo, salvo gamma (inclusivo)
+  lowHz: number; // inclusivo
+  highHz: number; // exclusivo, salvo gamma (inclusivo)
 }
 
 export interface BandPowerFrame {
@@ -50,12 +74,16 @@ export interface BandPowerFrame {
 // ───────────── Telemetría ─────────────
 export interface BatteryReading {
   sequence: number;
-  percent: number;     // 0..100
+  percent: number; // 0..100
   voltageMv: number;
   receivedAtMs: number;
 }
 
-export interface Vec3 { x: number; y: number; z: number }
+export interface Vec3 {
+  x: number;
+  y: number;
+  z: number;
+}
 
 export interface MotionSample {
   sequence: number;
@@ -64,7 +92,7 @@ export interface MotionSample {
   receivedAtMs: number;
 }
 export type AccelerometerPacket = MotionSample; // unidades: g
-export type GyroscopePacket = MotionSample;     // unidades: °/s
+export type GyroscopePacket = MotionSample; // unidades: °/s
 
 export interface PpgSample {
   sequence: number;
@@ -75,37 +103,47 @@ export interface PpgSample {
 
 export interface Telemetry {
   battery: BatteryReading | null;
-  accel: (Vec3 & { tMs: number }) | null;  // última muestra
+  accel: (Vec3 & { tMs: number }) | null; // última muestra
   gyro: (Vec3 & { tMs: number }) | null;
   ppg: PpgSample | null;
 }
 
 // ───────────── Conexión ─────────────
 export type ConnectionStatus =
-  | 'idle' | 'requesting-permissions' | 'scanning' | 'connecting'
-  | 'discovering' | 'streaming' | 'disconnecting' | 'error';
+  | 'idle'
+  | 'requesting-permissions'
+  | 'scanning'
+  | 'connecting'
+  | 'discovering'
+  | 'streaming'
+  | 'disconnecting'
+  | 'error';
 
 export interface MuseDeviceInfo {
-  id: string;        // deviceId de ble-plx (MAC en Android, UUID en iOS)
-  name: string;      // "Muse-XXXX"
+  id: string; // deviceId de ble-plx (MAC en Android, UUID en iOS)
+  name: string; // "Muse-XXXX"
   rssi: number | null;
 }
 
 export interface StreamStats {
   packetsReceived: ChannelMap<number>;
   packetsDropped: ChannelMap<number>;
+  packetsDuplicate?: ChannelMap<number>;
+  packetsOutOfOrder?: ChannelMap<number>;
   effectiveRateHz: number | null;
 }
 
 // ───────────── Grabaciones ─────────────
 export interface RecordingMeta {
   id: string;
-  fileName: string;         // mindMonitor_YYYY-MM-DD--HH-mm-ss.csv
+  fileName: string; // mindMonitor_YYYY-MM-DD--HH-mm-ss.csv
   startedAtMs: number;
   durationMs: number;
   rowCount: number;
   sizeBytes: number;
   uri: string;
+  format?: 'raw-v2';
+  source?: 'muse' | 'simulation';
 }
 
 // ───────────── Store ─────────────
@@ -117,8 +155,8 @@ export interface MuseState {
   telemetry: Telemetry;
   fit: FitCheck;
   headbandOn: boolean;
-  bands: BandPowerFrame | null;      // actualizado a 10 Hz
-  heartRate: number | null;          // BPM estimado desde PPG
+  bands: BandPowerFrame | null; // actualizado a 10 Hz
+  heartRate: number | null; // BPM estimado desde PPG
   stats: StreamStats;
   isRecording: boolean;
   isSimulating: boolean;
@@ -134,14 +172,14 @@ export interface MuseActions {
   setBattery(b: BatteryReading): void;
   setMotion(accel: Vec3 | null, gyro: Vec3 | null, tMs: number): void;
   setFit(fit: FitCheck): void;
-  setBands(frame: BandPowerFrame): void;
+  setBands(frame: BandPowerFrame | null): void;
   setHeartRate(bpm: number | null): void;
   setStats(stats: StreamStats): void;
   setRecording(active: boolean, startedAtMs: number | null): void;
   setSimulating(active: boolean): void;
   setRecordingRowCount(n: number): void;
   setRecordings(list: RecordingMeta[]): void;
-  reset(): void;   // tras desconexión: limpia telemetría/fit/bands/stats
+  reset(): void; // tras desconexión: limpia telemetría/fit/bands/stats
 }
 
 export type MuseStore = MuseState & MuseActions;

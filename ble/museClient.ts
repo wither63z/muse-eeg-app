@@ -1,561 +1,425 @@
-import type { Device, BleManager as BleManagerType } from 'react-native-ble-plx';
 import { Platform } from 'react-native';
-import { MuseDeviceInfo, ConnectionStatus, EegChannel } from '@/types/muse';
-import { MUSE_SERVICE_UUID, MUSE_CHAR, EEG_CHAR_BY_CHANNEL, MUSE_NAME_PREFIX, MUSE_PRESET, MUSE_PPG_PRESET, ACCEL_G_PER_LSB, GYRO_DPS_PER_LSB } from '@/constants/muse';
+import type { Device, Subscription } from 'react-native-ble-plx';
+import { toByteArray } from 'base64-js';
+import { EEG_CHANNELS, EegChannel, MuseDeviceInfo } from '@/types/muse';
+import {
+  MUSE_SERVICE_UUID,
+  MUSE_CHAR,
+  EEG_CHAR_BY_CHANNEL,
+  ACCEL_G_PER_LSB,
+  GYRO_DPS_PER_LSB,
+  MUSE_PRESET,
+  MUSE_PPG_PRESET,
+} from '@/constants/muse';
 import { getBleManager } from './bleManager';
 import { museSimulator } from './museSimulator';
-import { base64ToBytes, decodeEegPacket, decodeBattery, decodeMotion, decodePpg } from './museDecoder';
-import { encodeCommand, CMD_HALT, CMD_RESUME } from './museCommands';
+import {
+  base64ToBytes,
+  decodeEegPacket,
+  decodeBattery,
+  decodeMotion,
+  decodePpg,
+} from './museDecoder';
+import { encodeCommand } from './museCommands';
+import { museWebBluetooth } from './museWebBluetooth';
 import { dspEngine } from '@/dsp/dspEngine';
 import { recorder } from '@/recording/recorder';
 import { useMuseStore } from '@/store/useMuseStore';
-import { museWebBluetooth } from './museWebBluetooth';
 
-const EEG_CHANNELS: EegChannel[] = ['TP9', 'AF7', 'AF8', 'TP10'];
-
-/**
- * Cliente BLE para la diadema Muse.
- *
- * Rutas separadas:
- * - Web: usa navigator.bluetooth (Web Bluetooth API) vía museWebBluetooth.
- * - Nativo: usa react-native-ble-plx vía getBleManager().
- *
- * En ambos casos los datos fluyen al mismo dspEngine y store.
- */
-class MuseClient {
-  private ppgEnabled = false;
-  private ppgPacketCount = 0;
-  // Ruta nativa
-  private nativeDevice: Device | null = null;
-  private isNativeConnected: boolean = false;
-  // Ruta web
-  private isWebConnected: boolean = false;
-  // Simulador
-  private lastAccelMs: number = 0;
-  private lastGyroMs: number = 0;
-
-  // ─── Escaneo ────────────────────────────────────────────────────────
-
-  async scan(timeoutMs: number = 10000): Promise<void> {
-    if (Platform.OS === 'web') {
-      await this.scanWeb();
-      return;
-    }
-    await this.scanNative(timeoutMs);
+type Transport = {
+  info: MuseDeviceInfo;
+  available: string[];
+  subscribe(uuid: string, callback: (value: string) => void): Promise<void>;
+  write(command: string): Promise<void>;
+  close(): Promise<void>;
+};
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+async function deadline<T>(promise: Promise<T>, ms = 10000): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error('Muse no respondió a tiempo. Vuelve a conectar.')),
+          ms,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
+}
 
-  private async scanNative(timeoutMs: number = 10000): Promise<void> {
-    const manager = getBleManager();
-    if (!manager) return;
+/** One shared acquisition path; platform adapters only own GATT operations. */
+export class MuseClient {
+  private transport: Transport | null = null;
+  private generation = 0;
+  private scanTimer: ReturnType<typeof setTimeout> | null = null;
+  private monitorTimer: ReturnType<typeof setInterval> | null = null;
+  private connecting = false;
+  private scanDone: (() => void) | null = null;
+  private lastMotion = { accel: 0, gyro: 0 };
+  private counts = new Map<EegChannel, { sequence: number; count: number; time: number }>();
 
+  async scan(timeoutMs = 10000): Promise<void> {
     const store = useMuseStore.getState();
-    store.setStatus('scanning');
-
-    const state: string = await manager.state();
-    if (state !== 'PoweredOn') {
-      store.setStatus('error', 'Bluetooth está apagado. Actívalo para buscar dispositivos.');
+    if (
+      this.connecting ||
+      this.transport ||
+      museSimulator.isRunning() ||
+      useMuseStore.getState().isRecording
+    )
       return;
-    }
-
-    return new Promise((resolve) => {
-      const discovered = new Map<string, MuseDeviceInfo>();
-
-      manager.startDeviceScan(null, { allowDuplicates: false }, (error: any, device: any) => {
-        if (error) {
-          console.error('Scan error:', error);
-          return;
-        }
-
-        if (device && device.name && device.name.startsWith(MUSE_NAME_PREFIX)) {
-          discovered.set(device.id, {
-            id: device.id,
-            name: device.name,
-            rssi: device.rssi,
-          });
-          store.setDiscovered(Array.from(discovered.values()));
-        }
-      });
-
-      setTimeout(() => {
-        manager.stopDeviceScan();
+    this.stopScan();
+    store.setDiscovered([]);
+    store.setStatus('scanning');
+    try {
+      if (Platform.OS === 'web') {
+        await museWebBluetooth.scan();
+        const device = museWebBluetooth.device;
+        if (device)
+          store.setDiscovered([{ id: device.id, name: device.name || 'Muse', rssi: null }]);
         store.setStatus('idle');
-        resolve();
-      }, timeoutMs);
-    });
-  }
-
-  private async scanWeb(): Promise<void> {
-    const store = useMuseStore.getState();
-    store.setStatus('scanning');
-
-    try {
-      // Web Bluetooth abre el diálogo de selección del navegador.
-      // No hay "timeout" real: el usuario elige o cancela.
-      await museWebBluetooth.scan();
-
-      // Si llegó aquí, el usuario seleccionó un dispositivo.
-      store.setDiscovered([{
-        id: 'web-ble',
-        name: 'Muse (Web Bluetooth)',
-        rssi: 0,
-      }]);
-      store.setStatus('idle');
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : 'No se seleccionó ningún dispositivo';
-      console.log('[Web BLE] Scan cancelled:', msg);
-      store.setStatus('idle');
-    }
-  }
-
-  stopScan(): void {
-    if (Platform.OS === 'web') return; // Web Bluetooth no tiene "stop scan"
-    getBleManager()?.stopDeviceScan();
-  }
-
-  // ─── Conexión ───────────────────────────────────────────────────────
-
-  async connect(deviceId?: string): Promise<void> {
-    if (Platform.OS === 'web') {
-      await this.connectWeb();
-      return;
-    }
-    if (!deviceId) return;
-    await this.connectNative(deviceId);
-  }
-
-  private async connectNative(deviceId: string): Promise<void> {
-    const store = useMuseStore.getState();
-    const manager = getBleManager();
-    if (!manager) return;
-
-    try {
-      store.setStatus('connecting');
-
-      const state: string = await manager.state();
-      if (state !== 'PoweredOn') {
-        store.setStatus('error', 'Bluetooth está apagado. Actívalo para conectar.');
         return;
       }
-
-      const device = await manager.connectToDevice(deviceId, { requestMTU: 247 });
-      this.nativeDevice = device;
-      await device.discoverAllServicesAndCharacteristics();
-      const characteristics = await device.characteristicsForService(MUSE_SERVICE_UUID);
-      this.ppgEnabled = characteristics.some((c: { uuid: string }) => c.uuid.toLowerCase() === MUSE_CHAR.PPG);
-      this.ppgPacketCount = 0;
-      console.info(`[Muse] PPG infrarrojo ${this.ppgEnabled ? 'disponible; preset p50' : 'no disponible; preset p21'}`);
-
-      if (!this.nativeDevice) {
-        throw new Error('Failed to connect to device');
-      }
-
-      store.setStatus('discovering');
-
-      // Muse 2: enviar secuencia de inicio ANTES de suscribirse
-      // h (halt) → p21 (preset) → d (resume)
-      await this.sendStartCommandsNative();
-
-      // Suscribir a características EEG, batería, accel, gyro
-      await this.subscribeToCharacteristicsNative();
-
-      // Estado streaming
-      this.isNativeConnected = true;
-      store.setStatus('streaming');
-      store.setDevice({
-        id: this.nativeDevice.id,
-        name: this.nativeDevice.name || 'Muse',
-        rssi: this.nativeDevice.rssi,
-      });
-
-      // Iniciar DSP
-      dspEngine.start();
-
-      // Listener de desconexión
-      if (this.nativeDevice) {
-        this.nativeDevice.onDisconnected(async (error) => {
-          this.isNativeConnected = false;
-          dspEngine.stop();
-
-          if (useMuseStore.getState().isRecording) {
-            try {
-              await recorder.stop();
-            } catch {
-              // Si ya está detenido, ignorar
-            }
-          }
-
-          store.reset();
-          store.setStatus('idle');
+      const manager = getBleManager();
+      if (!manager || (await manager.state()) !== 'PoweredOn')
+        throw new Error('Activa Bluetooth y sus permisos para buscar Muse.');
+      await new Promise<void>((resolve, reject) => {
+        this.scanDone = resolve;
+        const found = new Map<string, MuseDeviceInfo>();
+        this.scanTimer = setTimeout(() => {
+          this.stopScan();
+          store.setStatus(
+            'idle',
+            found.size ? 'Elige Muse en la lista.' : 'No se encontraron dispositivos.',
+          );
+          resolve();
+        }, timeoutMs);
+        manager.startDeviceScan(null, { allowDuplicates: false }, (error, device) => {
           if (error) {
-            console.error('Disconnected with error:', error);
+            store.setStatus('error', error.message);
+            this.stopScan();
+            return;
+          }
+          if (device?.name?.startsWith('Muse')) {
+            found.set(device.id, { id: device.id, name: device.name, rssi: device.rssi });
+            store.setDiscovered([...found.values()]);
           }
         });
-      }
-
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Error de conexión';
-      store.setStatus('error', message);
-      throw error;
-    }
-  }
-
-  private async connectWeb(): Promise<void> {
-    const store = useMuseStore.getState();
-    store.setStatus('connecting');
-
-    try {
-      // Conectar al dispositivo seleccionado en scanWeb
-      await museWebBluetooth.connect();
-      this.isWebConnected = true;
-      this.ppgEnabled = await museWebBluetooth.hasCharacteristic(MUSE_CHAR.PPG);
-      this.ppgPacketCount = 0;
-      console.info(`[Muse] PPG infrarrojo ${this.ppgEnabled ? 'disponible; preset p50' : 'no disponible; preset p21'}`);
-
-      store.setStatus('discovering');
-
-      // Muse 2: enviar secuencia de inicio ANTES de suscribirse
-      await this.sendStartCommandsWeb();
-
-      // Suscribir a características EEG, batería, accel, gyro
-      await this.subscribeToCharacteristicsWeb();
-
-      // Estado streaming
-      store.setStatus('streaming');
-      store.setDevice({
-        id: 'web-ble',
-        name: 'Muse (Web Bluetooth)',
-        rssi: 0,
       });
-
-      // Iniciar DSP
-      dspEngine.start();
-
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Error de conexión';
-      store.setStatus('error', message);
+      const message = error instanceof Error ? error.message : 'No se pudo buscar Muse.';
+      const cancelled =
+        error instanceof Error && ['NotFoundError', 'AbortError'].includes(error.name);
+      store.setStatus(
+        cancelled ? 'idle' : 'error',
+        cancelled ? 'No se seleccionó una diadema.' : message,
+      );
+    }
+  }
+  stopScan(): void {
+    if (this.scanTimer) clearTimeout(this.scanTimer);
+    this.scanTimer = null;
+    getBleManager()?.stopDeviceScan();
+    const done = this.scanDone;
+    this.scanDone = null;
+    done?.();
+    if (useMuseStore.getState().status === 'scanning') useMuseStore.getState().setStatus('idle');
+  }
+  private async open(deviceId: string | undefined, generation: number): Promise<Transport> {
+    const lost = () => {
+      if (generation === this.generation)
+        void this.fail('Se perdió la conexión. Vuelve a conectar Muse.');
+    };
+    if (Platform.OS === 'web') {
+      try {
+        if (!museWebBluetooth.device) await museWebBluetooth.scan();
+        await deadline(museWebBluetooth.connect(), 15000);
+        museWebBluetooth.onDisconnected(lost);
+        return {
+          info: {
+            id: museWebBluetooth.device!.id,
+            name: museWebBluetooth.device!.name || 'Muse',
+            rssi: null,
+          },
+          available: await deadline(museWebBluetooth.characteristics()),
+          subscribe: (uuid, cb) => museWebBluetooth.monitor(uuid, cb),
+          write: (cmd) =>
+            museWebBluetooth.write(MUSE_CHAR.CONTROL, toByteArray(encodeCommand(cmd))),
+          close: async () => {
+            museWebBluetooth.disconnect();
+          },
+        };
+      } catch (error) {
+        museWebBluetooth.disconnect();
+        throw error;
+      }
+    }
+    const manager = getBleManager();
+    if (!manager || !deviceId) throw new Error('Busca y selecciona Muse antes de conectar.');
+    if ((await manager.state()) !== 'PoweredOn') throw new Error('Activa Bluetooth para conectar.');
+    const device: Device = await manager.connectToDevice(deviceId, {
+      requestMTU: 247,
+      timeout: 15000,
+    });
+    const subscriptions: Subscription[] = [device.onDisconnected(lost)];
+    try {
+      await deadline(device.discoverAllServicesAndCharacteristics(), 15000);
+      const characteristics = await deadline(device.characteristicsForService(MUSE_SERVICE_UUID));
+      const control = characteristics.find((c) => c.uuid.toLowerCase() === MUSE_CHAR.CONTROL);
+      return {
+        info: { id: device.id, name: device.name || 'Muse', rssi: device.rssi },
+        available: characteristics.map((c) => c.uuid.toLowerCase()),
+        subscribe: async (uuid, cb) => {
+          subscriptions.push(
+            device.monitorCharacteristicForService(MUSE_SERVICE_UUID, uuid, (error, value) => {
+              if (error) lost();
+              else if (value?.value) cb(value.value);
+            }),
+          );
+        },
+        write: async (cmd) => {
+          if (control?.isWritableWithResponse)
+            await device.writeCharacteristicWithResponseForService(
+              MUSE_SERVICE_UUID,
+              MUSE_CHAR.CONTROL,
+              encodeCommand(cmd),
+            );
+          else
+            await device.writeCharacteristicWithoutResponseForService(
+              MUSE_SERVICE_UUID,
+              MUSE_CHAR.CONTROL,
+              encodeCommand(cmd),
+            );
+        },
+        close: async () => {
+          subscriptions.splice(0).forEach((s) => s.remove());
+          await device.cancelConnection();
+        },
+      };
+    } catch (error) {
+      subscriptions.forEach((s) => s.remove());
+      await device.cancelConnection();
       throw error;
     }
   }
-
-  // ─── Desconexión ────────────────────────────────────────────────────
-
-  async disconnect(): Promise<void> {
-    const store = useMuseStore.getState();
-
-    // Simulator
-    if (museSimulator.isRunning()) {
-      if (store.isRecording) await recorder.stop();
-      museSimulator.stop();
-      dspEngine.stop();
-      store.reset();
-      store.setStatus('idle');
+  async connect(deviceId?: string, profile: 'full' | 'eeg' = 'full'): Promise<void> {
+    if (
+      this.connecting ||
+      this.transport ||
+      museSimulator.isRunning() ||
+      useMuseStore.getState().isRecording
+    )
       return;
+    this.stopScan();
+    this.connecting = true;
+    const generation = ++this.generation,
+      store = useMuseStore.getState();
+    store.setStatus('connecting');
+    try {
+      // The chooser must remain in the user's click call stack on web.
+      const transport = await this.open(deviceId, generation);
+      if (generation !== this.generation) {
+        await transport.close();
+        return;
+      }
+      this.transport = transport;
+      const required = [MUSE_CHAR.CONTROL, ...EEG_CHANNELS.map((ch) => EEG_CHAR_BY_CHANNEL[ch])];
+      if (required.some((uuid) => !transport.available.includes(uuid)))
+        throw new Error('Esta diadema no ofrece los cuatro canales EEG requeridos.');
+      store.setStatus('discovering');
+      store.setDevice(transport.info);
+      await deadline(transport.subscribe(MUSE_CHAR.CONTROL, () => {}));
+      await deadline(transport.write('h'));
+      await sleep(100);
+      dspEngine.start();
+      this.counts.clear();
+      for (const channel of EEG_CHANNELS)
+        await deadline(
+          transport.subscribe(EEG_CHAR_BY_CHANNEL[channel], (value) => {
+            if (generation !== this.generation) return;
+            try {
+              const received = Date.now(),
+                mono = performance.now();
+              const packet = decodeEegPacket(channel, base64ToBytes(value), received);
+              const previous = this.counts.get(channel);
+              if (
+                !previous ||
+                ((packet.sequence - previous.sequence + 65536) % 65536 > 0 &&
+                  (packet.sequence - previous.sequence + 65536) % 65536 < 32768)
+              )
+                this.counts.set(channel, {
+                  sequence: packet.sequence,
+                  count: (previous?.count || 0) + 1,
+                  time: mono,
+                });
+              dspEngine.pushEeg({ ...packet, receivedMonotonicMs: mono });
+            } catch {
+              void this.fail('Llegó un paquete EEG inválido. Vuelve a conectar.');
+            }
+          }),
+        );
+      const optional = [MUSE_CHAR.BATTERY, MUSE_CHAR.ACCEL, MUSE_CHAR.GYRO, MUSE_CHAR.PPG];
+      for (const uuid of optional.filter((id) => transport.available.includes(id)))
+        await deadline(
+          transport.subscribe(uuid, (value) => {
+            if (generation === this.generation) this.peripheral(uuid, value);
+          }),
+        );
+      let ppg = profile === 'full' && transport.available.includes(MUSE_CHAR.PPG);
+      try {
+        await this.begin(ppg ? MUSE_PPG_PRESET : MUSE_PRESET, generation);
+      } catch (error) {
+        if (!ppg || generation !== this.generation) throw error;
+        await deadline(transport.write('h'));
+        dspEngine.start();
+        this.counts.clear();
+        ppg = false;
+        await this.begin(MUSE_PRESET, generation);
+      }
+      if (generation !== this.generation) return;
+      store.setStatus('streaming', ppg ? null : 'Modo EEG/IMU, sin pulso.');
+      let keepalive = performance.now();
+      this.monitorTimer = setInterval(() => {
+        if (generation !== this.generation) return;
+        const now = performance.now();
+        if (EEG_CHANNELS.some((ch) => now - (this.counts.get(ch)?.time ?? 0) > 3000)) {
+          void this.fail('Un canal dejó de enviar datos. Vuelve a conectar Muse.');
+          return;
+        }
+        if (now - keepalive >= 10000) {
+          keepalive = now;
+          void deadline(transport.write('k')).catch(() =>
+            this.fail('Muse dejó de responder. Vuelve a conectar.'),
+          );
+        }
+      }, 500);
+    } catch (error) {
+      if (generation === this.generation)
+        await this.fail(error instanceof Error ? error.message : 'No se pudo conectar Muse.');
+    } finally {
+      this.connecting = false;
     }
-
-    // Web
-    if (this.isWebConnected) {
-      store.setStatus('disconnecting');
-      dspEngine.stop();
-
-      if (store.isRecording) {
-        try {
-          await recorder.stop();
-        } catch {
-          // ignorar
+  }
+  private async begin(preset: string, generation: number): Promise<void> {
+    const transport = this.transport;
+    if (!transport) throw new Error('Conexión interrumpida.');
+    for (const command of [preset, 's', 'd']) {
+      await deadline(transport.write(command));
+      await sleep(50);
+    }
+    const until = performance.now() + 8000;
+    while (generation === this.generation && performance.now() < until) {
+      if (EEG_CHANNELS.every((ch) => (this.counts.get(ch)?.count || 0) >= 2)) return;
+      await sleep(50);
+    }
+    throw new Error(
+      'No llegaron datos nuevos de los cuatro canales. Revisa que otra app no use Muse.',
+    );
+  }
+  private peripheral(uuid: string, value: string): void {
+    try {
+      const bytes = base64ToBytes(value),
+        time = Date.now(),
+        mono = performance.now();
+      const store = useMuseStore.getState();
+      if (uuid === MUSE_CHAR.BATTERY) {
+        const battery = decodeBattery(bytes);
+        store.setBattery(battery);
+        dspEngine.pushSensor({
+          stream: 'battery',
+          sequence: battery.sequence,
+          sampleIndex: 0,
+          value: battery.percent,
+          receivedAtMs: time,
+          receivedMonotonicMs: mono,
+        });
+      } else if (uuid === MUSE_CHAR.PPG) {
+        const packet = decodePpg(bytes, time);
+        dspEngine.pushPpg(packet);
+        packet.samples.forEach((value, sampleIndex) =>
+          dspEngine.pushSensor({
+            stream: 'ppg',
+            sequence: packet.sequence,
+            sampleIndex,
+            value,
+            receivedAtMs: time,
+            receivedMonotonicMs: mono,
+          }),
+        );
+      } else {
+        const gyro = uuid === MUSE_CHAR.GYRO,
+          packet = decodeMotion(bytes, gyro ? GYRO_DPS_PER_LSB : ACCEL_G_PER_LSB);
+        packet.samples.forEach((axes, sampleIndex) =>
+          dspEngine.pushSensor({
+            stream: gyro ? 'gyro' : 'accel',
+            sequence: packet.sequence,
+            sampleIndex,
+            axes,
+            receivedAtMs: time,
+            receivedMonotonicMs: mono,
+          }),
+        );
+        const kind = gyro ? 'gyro' : 'accel';
+        if (mono - this.lastMotion[kind] >= 100) {
+          this.lastMotion[kind] = mono;
+          const last = packet.samples[2];
+          store.setMotion(gyro ? null : last, gyro ? last : null, time);
         }
       }
-
-      if (museWebBluetooth.device) {
-        // Web Bluetooth no tiene cancelConnection; se cierra desde el lado del dispositivo
-        museWebBluetooth.device.gatt?.disconnect();
-      }
-      this.isWebConnected = false;
-      store.reset();
-      store.setStatus('idle');
-      return;
+    } catch {
+      void this.fail('Llegó un paquete de sensor inválido. Vuelve a conectar.');
     }
-
-    // Nativo
-    if (!this.nativeDevice || !this.isNativeConnected) return;
-
-    store.setStatus('disconnecting');
+  }
+  private async fail(message: string): Promise<void> {
+    await this.disconnect();
+    const store = useMuseStore.getState();
+    if (!store.isRecording) store.setStatus('error', message);
+  }
+  async disconnect(): Promise<void> {
+    ++this.generation;
+    this.stopScan();
+    if (this.monitorTimer) clearInterval(this.monitorTimer);
+    this.monitorTimer = null;
+    const transport = this.transport;
+    this.transport = null;
+    museSimulator.stop();
     dspEngine.stop();
-
+    const store = useMuseStore.getState();
+    let saveError: string | null = null;
     if (store.isRecording) {
       try {
         await recorder.stop();
       } catch {
-        // ignorar
+        saveError =
+          'No se pudo guardar la grabación. No cierres la página; revisa el almacenamiento.';
       }
     }
-
     try {
-      await this.nativeDevice.cancelConnection();
-    } catch (error) {
-      console.error('Disconnect error:', error);
+      if (transport) await deadline(transport.close(), 5000);
+    } catch {
+      /* Already disconnected. */
     }
-
-    this.isNativeConnected = false;
-    this.nativeDevice = null;
-    store.reset();
-    store.setStatus('idle');
+    if (!saveError) store.reset();
+    store.setStatus(saveError ? 'error' : 'idle', saveError);
   }
-
-  // ─── Suscripciones nativas ──────────────────────────────────────────
-
-  private async subscribeToCharacteristicsNative(): Promise<void> {
-    if (!this.nativeDevice) return;
-
-    const store = useMuseStore.getState();
-
-    // Suscribir a canales EEG
-    for (const channel of EEG_CHANNELS) {
-      const charUuid = EEG_CHAR_BY_CHANNEL[channel];
-      console.log(`[BLE] Subscribing to EEG channel ${channel}: ${charUuid}`);
-      this.nativeDevice.monitorCharacteristicForService(
-        MUSE_SERVICE_UUID,
-        charUuid,
-        (error, characteristic) => {
-          if (error) {
-            console.error(`Error monitoring ${channel}:`, error);
-            return;
-          }
-          if (characteristic?.value) {
-            try {
-              const bytes = base64ToBytes(characteristic.value);
-              const packet = decodeEegPacket(channel, bytes, Date.now());
-              dspEngine.pushEeg(packet);
-            } catch (e) {
-              console.error(`Error decoding ${channel}:`, e);
-            }
-          }
-        },
-      );
-    }
-
-    // Suscribir a batería
-    this.nativeDevice.monitorCharacteristicForService(
-      MUSE_SERVICE_UUID,
-      MUSE_CHAR.BATTERY,
-      (error, characteristic) => {
-        if (error) {
-          console.error('Error monitoring battery:', error);
-          return;
-        }
-        if (characteristic?.value) {
-          try {
-            const bytes = base64ToBytes(characteristic.value);
-            const reading = decodeBattery(bytes);
-            store.setBattery(reading);
-          } catch (e) {
-            console.error('Error decoding battery:', e);
-          }
-        }
-      },
-    );
-
-    // Suscribir a accel
-    this.nativeDevice.monitorCharacteristicForService(
-      MUSE_SERVICE_UUID,
-      MUSE_CHAR.ACCEL,
-      (error, characteristic) => {
-        if (error) {
-          console.error('Error monitoring accel:', error);
-          return;
-        }
-        if (characteristic?.value) {
-          const now = Date.now();
-          if (now - this.lastAccelMs < 100) return;
-          this.lastAccelMs = now;
-          try {
-            const bytes = base64ToBytes(characteristic.value);
-            const packet = decodeMotion(bytes, ACCEL_G_PER_LSB);
-            store.setMotion(packet.samples[0], null, now);
-          } catch (e) {
-            console.error('Error decoding accel:', e);
-          }
-        }
-      },
-    );
-
-    // Suscribir a gyro
-    this.nativeDevice.monitorCharacteristicForService(
-      MUSE_SERVICE_UUID,
-      MUSE_CHAR.GYRO,
-      (error, characteristic) => {
-        if (error) {
-          console.error('Error monitoring gyro:', error);
-          return;
-        }
-        if (characteristic?.value) {
-          const now = Date.now();
-          if (now - this.lastGyroMs < 100) return;
-          this.lastGyroMs = now;
-          try {
-            const bytes = base64ToBytes(characteristic.value);
-            const packet = decodeMotion(bytes, GYRO_DPS_PER_LSB);
-            store.setMotion(null, packet.samples[0], now);
-          } catch (e) {
-            console.error('Error decoding gyro:', e);
-          }
-        }
-      },
-    );
-
-    // Suscribir a PPG (ritmo cardíaco)
-    if (this.ppgEnabled) this.nativeDevice.monitorCharacteristicForService(
-      MUSE_SERVICE_UUID,
-      MUSE_CHAR.PPG,
-      (error, characteristic) => {
-        if (error) {
-          console.error('Error monitoring ppg:', error);
-          return;
-        }
-        if (characteristic?.value) {
-          try {
-            const bytes = base64ToBytes(characteristic.value);
-            const packet = decodePpg(bytes, Date.now());
-            this.ppgPacketCount++;
-            if (this.ppgPacketCount === 1) console.info('[Muse] Primer paquete PPG infrarrojo recibido: 6 muestras');
-            dspEngine.pushPpg(packet);
-          } catch (e) {
-            console.error('Error decoding ppg:', e);
-          }
-        }
-      },
-    );
-  }
-
-  // ─── Suscripciones web ──────────────────────────────────────────────
-
-  private async subscribeToCharacteristicsWeb(): Promise<void> {
-    const store = useMuseStore.getState();
-
-    // Suscribir a canales EEG
-    for (const channel of EEG_CHANNELS) {
-      const charUuid = EEG_CHAR_BY_CHANNEL[channel];
-      console.log(`[Web BLE] Subscribing to EEG channel ${channel}: ${charUuid}`);
-      await museWebBluetooth.monitor(charUuid, (error, value) => {
-        if (error || !value) {
-          console.error(`Error monitoring ${channel}:`, error);
-          return;
-        }
-        try {
-          const bytes = base64ToBytes(value);
-          const packet = decodeEegPacket(channel, bytes, Date.now());
-          dspEngine.pushEeg(packet);
-        } catch (e) {
-          console.error(`Error decoding ${channel}:`, e);
-        }
-      });
-    }
-
-    // Suscribir a batería
-    await museWebBluetooth.monitor(MUSE_CHAR.BATTERY, (error, value) => {
-      if (error || !value) return;
-      try {
-        const bytes = base64ToBytes(value);
-        const reading = decodeBattery(bytes);
-        store.setBattery(reading);
-      } catch (e) {
-        console.error('Error decoding battery:', e);
-      }
-    });
-
-    // Suscribir a accel
-    await museWebBluetooth.monitor(MUSE_CHAR.ACCEL, (error, value) => {
-      if (error || !value) return;
-      const now = Date.now();
-      if (now - this.lastAccelMs < 100) return;
-      this.lastAccelMs = now;
-      try {
-        const bytes = base64ToBytes(value);
-        const packet = decodeMotion(bytes, ACCEL_G_PER_LSB);
-        store.setMotion(packet.samples[0], null, now);
-      } catch (e) {
-        console.error('Error decoding accel:', e);
-      }
-    });
-
-    // Suscribir a gyro
-    await museWebBluetooth.monitor(MUSE_CHAR.GYRO, (error, value) => {
-      if (error || !value) return;
-      const now = Date.now();
-      if (now - this.lastGyroMs < 100) return;
-      this.lastGyroMs = now;
-      try {
-        const bytes = base64ToBytes(value);
-        const packet = decodeMotion(bytes, GYRO_DPS_PER_LSB);
-        store.setMotion(null, packet.samples[0], now);
-      } catch (e) {
-        console.error('Error decoding gyro:', e);
-      }
-    });
-
-    // Suscribir a PPG (ritmo cardíaco)
-    if (this.ppgEnabled) await museWebBluetooth.monitor(MUSE_CHAR.PPG, (error, value) => {
-      if (error || !value) return;
-      try {
-        const bytes = base64ToBytes(value);
-        const packet = decodePpg(bytes, Date.now());
-        this.ppgPacketCount++;
-            if (this.ppgPacketCount === 1) console.info('[Muse] Primer paquete PPG infrarrojo recibido: 6 muestras');
-            dspEngine.pushPpg(packet);
-      } catch (e) {
-        console.error('Error decoding ppg:', e);
-      }
-    });
-  }
-
-  // ─── Comandos nativos ───────────────────────────────────────────────
-
-  private async sendStartCommandsNative(): Promise<void> {
-    if (!this.nativeDevice) return;
-
-    const commands = [CMD_HALT, this.ppgEnabled ? MUSE_PPG_PRESET : MUSE_PRESET, CMD_RESUME];
-
-    for (const cmd of commands) {
-      const encoded = encodeCommand(cmd);
-      try {
-        await this.nativeDevice.writeCharacteristicWithoutResponseForService(
-          MUSE_SERVICE_UUID,
-          MUSE_CHAR.CONTROL,
-          encoded,
-        );
-      } catch {
-        await this.nativeDevice.writeCharacteristicWithResponseForService(
-          MUSE_SERVICE_UUID,
-          MUSE_CHAR.CONTROL,
-          encoded,
-        );
-      }
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-  }
-
-  // ─── Comandos web ───────────────────────────────────────────────────
-
-  private async sendStartCommandsWeb(): Promise<void> {
-    const commands = [CMD_HALT, this.ppgEnabled ? MUSE_PPG_PRESET : MUSE_PRESET, CMD_RESUME];
-
-    for (const cmd of commands) {
-      const encoded = encodeCommand(cmd);
-      const bytes = Uint8Array.from(atob(encoded), c => c.charCodeAt(0));
-      await museWebBluetooth.write(MUSE_CHAR.CONTROL, bytes);
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-  }
-
-  // ─── Simulador ──────────────────────────────────────────────────────
-
   async connectSimulator(): Promise<void> {
+    if (
+      this.connecting ||
+      this.transport ||
+      museSimulator.isRunning() ||
+      useMuseStore.getState().isRecording
+    )
+      return;
+    this.stopScan();
     const store = useMuseStore.getState();
-    store.setStatus('streaming');
+    dspEngine.start('simulation');
     store.setSimulating(true);
-    dspEngine.start();
+    store.setDevice({ id: 'simulation', name: 'Datos simulados', rssi: null });
+    store.setStatus('streaming');
     museSimulator.start();
-    store.setDevice({ id: 'sim-1', name: 'Muse Simulator', rssi: 0 });
   }
 }
-
 export const museClient = new MuseClient();

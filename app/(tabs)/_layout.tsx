@@ -1,5 +1,5 @@
 import { Tabs } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
+import Ionicons from '@expo/vector-icons/Ionicons';
 
 export default function TabLayout() {
   return (
@@ -21,36 +21,28 @@ export default function TabLayout() {
         name="index"
         options={{
           title: 'Conexión',
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="bluetooth" size={size} color={color} />
-          ),
+          tabBarIcon: ({ color, size }) => <Ionicons name="bluetooth" size={size} color={color} />,
         }}
       />
       <Tabs.Screen
         name="raw-eeg"
         options={{
           title: 'EEG',
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="pulse" size={size} color={color} />
-          ),
+          tabBarIcon: ({ color, size }) => <Ionicons name="pulse" size={size} color={color} />,
         }}
       />
       <Tabs.Screen
         name="brainwaves"
         options={{
           title: 'Ondas',
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="bar-chart" size={size} color={color} />
-          ),
+          tabBarIcon: ({ color, size }) => <Ionicons name="bar-chart" size={size} color={color} />,
         }}
       />
       <Tabs.Screen
         name="recordings"
         options={{
           title: 'Grabaciones',
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="folder" size={size} color={color} />
-          ),
+          tabBarIcon: ({ color, size }) => <Ionicons name="folder" size={size} color={color} />,
         }}
       />
     </Tabs>

@@ -8,9 +8,19 @@ import { RecordingMeta } from '@/types/muse';
 
 export default function RootLayout() {
   useEffect(() => {
-    recordingsRepo.list().then((recordings: RecordingMeta[]) => {
-      useMuseStore.getState().setRecordings(recordings);
-    });
+    recordingsRepo
+      .list()
+      .then((recordings: RecordingMeta[]) => {
+        useMuseStore.getState().setRecordings(recordings);
+      })
+      .catch((error) =>
+        useMuseStore
+          .getState()
+          .setStatus(
+            'error',
+            error instanceof Error ? error.message : 'No se pudieron abrir las grabaciones.',
+          ),
+      );
   }, []);
 
   return (

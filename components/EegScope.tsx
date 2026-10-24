@@ -1,5 +1,6 @@
 import React, { useRef, useCallback, useEffect, useState } from 'react';
 import { View, Text, StyleSheet, Dimensions, Platform } from 'react-native';
+import type { SkPath } from '@shopify/react-native-skia';
 import { SharedValue, useSharedValue } from 'react-native-reanimated';
 import { theme } from '@/constants/Theme';
 import { EegChannel } from '@/types/muse';
@@ -7,26 +8,9 @@ import { dspEngine } from '@/dsp/dspEngine';
 import { highPassDisplayWindow } from '@/dsp/displaySignal';
 import { useRafLoop } from '@/hooks/useRafLoop';
 
-// Importación condicional por plataforma
-let SkiaComponents: any;
-let CanvasRenderer: any;
-
-if (Platform.OS === 'web') {
-  // En web, usamos canvas 2D nativo
-  SkiaComponents = null;
-  CanvasRenderer = null;
-} else {
-  // En nativo, usamos Skia
-  const skia = require('@shopify/react-native-skia');
-  SkiaComponents = {
-    Canvas: skia.Canvas,
-    Path: skia.Path,
-    Skia: skia.Skia,
-    Group: skia.Group,
-    Line: skia.Line,
-  };
-  CanvasRenderer = skia.Canvas;
-}
+// Load native Skia only on native platforms; the web route uses canvas 2D.
+const SkiaComponents: typeof import('@shopify/react-native-skia') | null =
+  Platform.OS === 'web' ? null : require('@shopify/react-native-skia');
 
 interface EegScopeProps {
   windowSeconds: 2 | 5 | 10;
@@ -59,13 +43,13 @@ export function EegScope({ windowSeconds, uvPerDiv, paused, displayHighPass }: E
 
   // Para nativo, usamos shared values de Skia
   let path0, path1, path2, path3;
-  let paths: SharedValue<any>[] = [];
+  let paths: SharedValue<SkPath>[] = [];
 
   if (!isWeb) {
-    path0 = useSharedValue(SkiaComponents.Skia.Path.Make());
-    path1 = useSharedValue(SkiaComponents.Skia.Path.Make());
-    path2 = useSharedValue(SkiaComponents.Skia.Path.Make());
-    path3 = useSharedValue(SkiaComponents.Skia.Path.Make());
+    path0 = useSharedValue(SkiaComponents!.Skia.Path.Make());
+    path1 = useSharedValue(SkiaComponents!.Skia.Path.Make());
+    path2 = useSharedValue(SkiaComponents!.Skia.Path.Make());
+    path3 = useSharedValue(SkiaComponents!.Skia.Path.Make());
     paths = [path0, path1, path2, path3];
   }
 
@@ -95,8 +79,8 @@ export function EegScope({ windowSeconds, uvPerDiv, paused, displayHighPass }: E
 
         let first = true;
         for (let col = 0; col < canvas.width; col++) {
-          const start = Math.floor(col * n / canvas.width);
-          const end = Math.min(n, Math.max(start + 1, Math.floor((col + 1) * n / canvas.width)));
+          const start = Math.floor((col * n) / canvas.width);
+          const end = Math.min(n, Math.max(start + 1, Math.floor(((col + 1) * n) / canvas.width)));
 
           let minUv = Infinity;
           let maxUv = -Infinity;
@@ -108,13 +92,22 @@ export function EegScope({ windowSeconds, uvPerDiv, paused, displayHighPass }: E
             if (uv > maxUv) maxUv = uv;
           }
 
-          if (minUv === Infinity) continue;
+          if (minUv === Infinity) {
+            first = true;
+            continue;
+          }
 
           const yMin = centerY - (minUv / uvPerDiv) * divHeight;
           const yMax = centerY - (maxUv / uvPerDiv) * divHeight;
 
-          const clampedYMin = Math.max(LANE_HEIGHT * chIdx, Math.min(LANE_HEIGHT * (chIdx + 1), yMin));
-          const clampedYMax = Math.max(LANE_HEIGHT * chIdx, Math.min(LANE_HEIGHT * (chIdx + 1), yMax));
+          const clampedYMin = Math.max(
+            LANE_HEIGHT * chIdx,
+            Math.min(LANE_HEIGHT * (chIdx + 1), yMin),
+          );
+          const clampedYMax = Math.max(
+            LANE_HEIGHT * chIdx,
+            Math.min(LANE_HEIGHT * (chIdx + 1), yMax),
+          );
 
           if (first) {
             ctx.moveTo(col, clampedYMin);
@@ -143,9 +136,10 @@ export function EegScope({ windowSeconds, uvPerDiv, paused, displayHighPass }: E
         const centerY = LANE_HEIGHT * chIdx + LANE_HEIGHT / 2;
         const divHeight = LANE_HEIGHT / 2;
 
+        let first = true;
         for (let col = 0; col < width; col++) {
-          const start = Math.floor(col * n / width);
-          const end = Math.min(n, Math.max(start + 1, Math.floor((col + 1) * n / width)));
+          const start = Math.floor((col * n) / width);
+          const end = Math.min(n, Math.max(start + 1, Math.floor(((col + 1) * n) / width)));
 
           let minUv = Infinity;
           let maxUv = -Infinity;
@@ -157,19 +151,31 @@ export function EegScope({ windowSeconds, uvPerDiv, paused, displayHighPass }: E
             if (uv > maxUv) maxUv = uv;
           }
 
-          if (minUv === Infinity) continue;
+          if (minUv === Infinity) {
+            first = true;
+            continue;
+          }
 
           const yMin = centerY - (minUv / uvPerDiv) * divHeight;
           const yMax = centerY - (maxUv / uvPerDiv) * divHeight;
 
-          const clampedYMin = Math.max(LANE_HEIGHT * chIdx, Math.min(LANE_HEIGHT * (chIdx + 1), yMin));
-          const clampedYMax = Math.max(LANE_HEIGHT * chIdx, Math.min(LANE_HEIGHT * (chIdx + 1), yMax));
+          const clampedYMin = Math.max(
+            LANE_HEIGHT * chIdx,
+            Math.min(LANE_HEIGHT * (chIdx + 1), yMin),
+          );
+          const clampedYMax = Math.max(
+            LANE_HEIGHT * chIdx,
+            Math.min(LANE_HEIGHT * (chIdx + 1), yMax),
+          );
 
-          path.moveTo(col, clampedYMin);
+          if (first) {
+            path.moveTo(col, clampedYMin);
+            first = false;
+          } else path.lineTo(col, clampedYMin);
           path.lineTo(col, clampedYMax);
         }
 
-        paths[chIdx].value = path;
+        paths[chIdx].modify((current) => current, true);
       }
     }
   }, [windowSeconds, uvPerDiv, displayHighPass, isWeb]);
@@ -193,9 +199,7 @@ export function EegScope({ windowSeconds, uvPerDiv, paused, displayHighPass }: E
             style={[styles.channelLabel, { top: LANE_HEIGHT * i + 4 }]}
             pointerEvents="none"
           >
-            <Text style={[styles.channelLabelText, { color: CHANNEL_COLORS[i] }]}>
-              {ch}
-            </Text>
+            <Text style={[styles.channelLabelText, { color: CHANNEL_COLORS[i] }]}>{ch}</Text>
           </View>
         ))}
       </View>
@@ -203,6 +207,8 @@ export function EegScope({ windowSeconds, uvPerDiv, paused, displayHighPass }: E
   }
 
   // Renderizar Skia
+  if (!SkiaComponents) return null;
+  const CanvasRenderer = SkiaComponents.Canvas;
   return (
     <View style={styles.container}>
       <CanvasRenderer style={styles.canvas}>
@@ -236,9 +242,7 @@ export function EegScope({ windowSeconds, uvPerDiv, paused, displayHighPass }: E
           style={[styles.channelLabel, { top: LANE_HEIGHT * i + 4 }]}
           pointerEvents="none"
         >
-          <Text style={[styles.channelLabelText, { color: CHANNEL_COLORS[i] }]}>
-            {ch}
-          </Text>
+          <Text style={[styles.channelLabelText, { color: CHANNEL_COLORS[i] }]}>{ch}</Text>
         </View>
       ))}
     </View>

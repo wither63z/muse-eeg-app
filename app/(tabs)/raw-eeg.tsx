@@ -13,6 +13,7 @@ const UV_PER_DIVS = [50, 100] as const;
 
 export default function RawEegScreen() {
   const status = useMuseStore((s) => s.status);
+  const isSimulating = useMuseStore((s) => s.isSimulating);
   const [windowSeconds, setWindowSeconds] = useState<2 | 5 | 10>(5);
   const [uvPerDiv, setUvPerDiv] = useState<50 | 100>(100);
   const [paused, setPaused] = useState(false);
@@ -22,6 +23,11 @@ export default function RawEegScreen() {
 
   return (
     <View style={styles.screen}>
+      {isSimulating && (
+        <Text style={{ color: theme.colors.simulator }}>
+          DATOS SIMULADOS · no provienen de una diadema
+        </Text>
+      )}
       {/* Fila de controles estilo píldora */}
       <View style={styles.controlRow}>
         <View style={styles.pillGroup}>
@@ -91,7 +97,7 @@ export default function RawEegScreen() {
           {isRecording && (
             <>
               <Text style={styles.recDot}>●</Text>
-              <Text style={styles.recTimer}>01:23</Text>
+              <Text style={styles.recTimer}>Grabando</Text>
             </>
           )}
         </View>

@@ -1,66 +1,81 @@
-import { MUSE_SERVICE_UUID, MUSE_CHAR } from '@/constants/muse';
-import { EegChannel } from '@/types/muse';
+import { fromByteArray } from 'base64-js';
+import { MUSE_SERVICE_UUID } from '@/constants/muse';
 
-// Interfaz mínima compatible con la lógica de nuestro cliente
+/** Each connection owns its listeners. Disconnecting removes them before reconnecting. */
 export class MuseWebBluetooth {
-  public device: BluetoothDevice | null = null;
-  public server: BluetoothRemoteGATTServer | null = null;
+  device: BluetoothDevice | null = null;
+  server: BluetoothRemoteGATTServer | null = null;
+  private service: BluetoothRemoteGATTService | null = null;
+  private generation = 0;
+  private listeners: (() => void)[] = [];
 
   async scan(): Promise<void> {
-    try {
-      this.device = await navigator.bluetooth.requestDevice({
-        filters: [{ namePrefix: 'Muse' }],
-        optionalServices: [MUSE_SERVICE_UUID],
-      });
-    } catch (e) {
-      console.error('Web Bluetooth scan failed:', e);
-      throw e;
-    }
-  }
-
-  async connect(): Promise<void> {
-    if (!this.device) {
-      // Intentar forzar el escaneo si no hay dispositivo
-      await this.scan();
-    }
-    if (!this.device) throw new Error('No device selected');
-
-    // Limpiar servidor previo si existe
-    this.server = null;
-    this.server = await this.device.gatt!.connect();
-  }
-
-  async hasCharacteristic(uuid: string): Promise<boolean> {
-    if (!this.server) throw new Error('Not connected');
-    const service = await this.server.getPrimaryService(MUSE_SERVICE_UUID);
-    const characteristics = await service.getCharacteristics();
-    return characteristics.some((characteristic) => characteristic.uuid.toLowerCase() === uuid.toLowerCase());
-  }
-
-  async monitor(
-    charUuid: string,
-    callback: (error: Error | null, value: string | null) => void
-  ): Promise<void> {
-    if (!this.server) throw new Error('Not connected');
-    const service = await this.server.getPrimaryService(MUSE_SERVICE_UUID);
-    const characteristic = await service.getCharacteristic(charUuid);
-
-    await characteristic.startNotifications();
-    characteristic.addEventListener('characteristicvaluechanged', (event: any) => {
-      const value = event.target.value as DataView;
-      // Usar byteOffset y byteLength para obtener exactamente los bytes recibidos
-      const bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
-      const base64 = btoa(String.fromCharCode(...bytes));
-      callback(null, base64);
+    if (typeof navigator === 'undefined' || !navigator.bluetooth)
+      throw new Error(
+        'Este navegador no ofrece Bluetooth. Usa Chrome/Edge compatible o una compilación nativa.',
+      );
+    if (!globalThis.isSecureContext) throw new Error('Abre la aplicación con HTTPS o localhost.');
+    this.device = await navigator.bluetooth.requestDevice({
+      filters: [{ namePrefix: 'Muse' }],
+      optionalServices: [MUSE_SERVICE_UUID],
     });
   }
-
-  async write(charUuid: string, data: Uint8Array): Promise<void> {
-    if (!this.server) throw new Error('Not connected');
-    const service = await this.server.getPrimaryService(MUSE_SERVICE_UUID);
-    const characteristic = await service.getCharacteristic(charUuid);
-    await characteristic.writeValue(data.buffer as ArrayBuffer);
+  async connect(): Promise<void> {
+    if (!this.device) await this.scan();
+    if (!this.device?.gatt) throw new Error('No se seleccionó una diadema Bluetooth compatible.');
+    const generation = ++this.generation;
+    const server = await this.device.gatt.connect();
+    if (generation !== this.generation) {
+      server.disconnect();
+      throw new Error('Conexión interrumpida.');
+    }
+    this.server = server;
+    const service = await server.getPrimaryService(MUSE_SERVICE_UUID);
+    if (generation !== this.generation) {
+      server.disconnect();
+      throw new Error('Conexión interrumpida.');
+    }
+    this.service = service;
+  }
+  async characteristics(): Promise<string[]> {
+    if (!this.service) throw new Error('Muse no está conectado.');
+    return (await this.service.getCharacteristics()).map((c) => c.uuid.toLowerCase());
+  }
+  onDisconnected(callback: () => void): void {
+    if (!this.device) throw new Error('Muse no está seleccionado.');
+    const device = this.device;
+    device.addEventListener('gattserverdisconnected', callback);
+    this.listeners.push(() => device.removeEventListener('gattserverdisconnected', callback));
+  }
+  async monitor(uuid: string, callback: (value: string) => void): Promise<void> {
+    if (!this.service) throw new Error('Muse no está conectado.');
+    const characteristic = await this.service.getCharacteristic(uuid);
+    const listener = () => {
+      const value = characteristic.value;
+      if (value)
+        callback(fromByteArray(new Uint8Array(value.buffer, value.byteOffset, value.byteLength)));
+    };
+    characteristic.addEventListener('characteristicvaluechanged', listener);
+    this.listeners.push(() =>
+      characteristic.removeEventListener('characteristicvaluechanged', listener),
+    );
+    await characteristic.startNotifications();
+  }
+  async write(uuid: string, bytes: Uint8Array): Promise<void> {
+    if (!this.service) throw new Error('Muse no está conectado.');
+    const characteristic = await this.service.getCharacteristic(uuid);
+    const data = Uint8Array.from(bytes);
+    if (characteristic.properties.write) await characteristic.writeValueWithResponse(data);
+    else if (characteristic.properties.writeWithoutResponse)
+      await characteristic.writeValueWithoutResponse(data);
+    else throw new Error('El control de Muse no permite escribir comandos.');
+  }
+  disconnect(): void {
+    this.generation++;
+    this.listeners.splice(0).forEach((remove) => remove());
+    this.device?.gatt?.disconnect();
+    this.server = null;
+    this.service = null;
   }
 }
-
 export const museWebBluetooth = new MuseWebBluetooth();

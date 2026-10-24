@@ -31,14 +31,16 @@ export function RecordingRow({ meta, onShare, onDelete }: RecordingRowProps) {
       }
       return;
     }
-    Alert.alert(
-      'Eliminar grabación',
-      `¿Eliminar ${meta.fileName}?`,
-      [
-        { text: 'Cancelar', style: 'cancel' },
-        { text: 'Eliminar', style: 'destructive', onPress: () => { void performDelete(); } },
-      ],
-    );
+    Alert.alert('Eliminar grabación', `¿Eliminar ${meta.fileName}?`, [
+      { text: 'Cancelar', style: 'cancel' },
+      {
+        text: 'Eliminar',
+        style: 'destructive',
+        onPress: () => {
+          void performDelete();
+        },
+      },
+    ]);
   };
 
   const formatDuration = (ms: number) => {
@@ -57,7 +59,9 @@ export function RecordingRow({ meta, onShare, onDelete }: RecordingRowProps) {
   return (
     <View style={styles.container}>
       <View style={styles.info}>
-        <Text style={styles.fileName}>{meta.fileName.replace('mindMonitor_', '').replace('.csv', '')}</Text>
+        <Text style={styles.fileName}>
+          {meta.fileName.replace('mindMonitor_', '').replace('.csv', '')}
+        </Text>
         <Text style={[styles.meta, theme.typography]}>
           {formatDuration(meta.durationMs)} · {formatSize(meta.sizeBytes)}
         </Text>
@@ -67,6 +71,8 @@ export function RecordingRow({ meta, onShare, onDelete }: RecordingRowProps) {
         <TouchableOpacity
           style={styles.iconButton}
           onPress={() => onShare(meta.id)}
+          accessibilityRole="button"
+          accessibilityLabel="Exportar CSV"
           activeOpacity={0.7}
         >
           <Text style={styles.iconText}>📤</Text>

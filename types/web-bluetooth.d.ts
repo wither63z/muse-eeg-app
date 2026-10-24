@@ -1,54 +1,33 @@
-/** Declaraciones de tipo mínimas para Web Bluetooth API */
-interface BluetoothDevice {
+/** Minimal Web Bluetooth interfaces used by the browser transport. */
+interface BluetoothDevice extends EventTarget {
   id: string;
   name?: string;
   gatt?: BluetoothRemoteGATTServer;
 }
-
 interface BluetoothRemoteGATTServer {
-  device: BluetoothDevice;
   connected: boolean;
   connect(): Promise<BluetoothRemoteGATTServer>;
   disconnect(): void;
-  getPrimaryService(service: string): Promise<BluetoothRemoteGATTService>;
+  getPrimaryService(uuid: string): Promise<BluetoothRemoteGATTService>;
 }
-
 interface BluetoothRemoteGATTService {
-  device: BluetoothDevice;
-  uuid: string;
-  isPrimary: boolean;
   getCharacteristics(): Promise<BluetoothRemoteGATTCharacteristic[]>;
-  getCharacteristic(characteristic: string): Promise<BluetoothRemoteGATTCharacteristic>;
+  getCharacteristic(uuid: string): Promise<BluetoothRemoteGATTCharacteristic>;
 }
-
-interface BluetoothRemoteGATTCharacteristic {
-  service: BluetoothRemoteGATTService;
+interface BluetoothRemoteGATTCharacteristic extends EventTarget {
   uuid: string;
-  properties: BluetoothCharacteristicProperties;
   value?: DataView;
+  properties: { write: boolean; writeWithoutResponse: boolean; notify: boolean; indicate: boolean };
   startNotifications(): Promise<BluetoothRemoteGATTCharacteristic>;
-  writeValue(value: BufferSource): Promise<void>;
-  addEventListener(
-    type: 'characteristicvaluechanged',
-    listener: (event: Event) => void
-  ): void;
+  stopNotifications(): Promise<BluetoothRemoteGATTCharacteristic>;
+  writeValueWithResponse(value: BufferSource): Promise<void>;
+  writeValueWithoutResponse(value: BufferSource): Promise<void>;
 }
-
-interface BluetoothCharacteristicProperties {
-  broadcast: boolean;
-  read: boolean;
-  writeWithoutResponse: boolean;
-  write: boolean;
-  notify: boolean;
-  indicate: boolean;
-  authenticatedSignedWrites: boolean;
-}
-
 interface Navigator {
-  bluetooth: {
+  bluetooth?: {
     requestDevice(options: {
-      filters?: Array<{ namePrefix?: string; services?: string[] }>;
-      optionalServices?: string[];
+      filters: { namePrefix: string }[];
+      optionalServices: string[];
     }): Promise<BluetoothDevice>;
   };
 }

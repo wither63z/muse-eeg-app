@@ -9,7 +9,7 @@ interface BatteryGaugeProps {
 export function BatteryGaugeCompact({ percent }: BatteryGaugeProps) {
   return (
     <View style={styles.card}>
-      <Text style={styles.label}>ENERGÍA</Text>
+      <Text style={styles.label}>BATERÍA</Text>
       <View style={styles.valueContainer}>
         <Text style={[styles.value, theme.typography]}>
           {percent !== null ? `${percent.toFixed(0)}%` : '--'}

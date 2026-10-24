@@ -3,19 +3,19 @@
     "name": "Muse Open Monitor",
     "slug": "muse-open-monitor",
     "scheme": "museopenmonitor",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "orientation": "default",
     "userInterfaceStyle": "dark",
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.example.museopenmonitor",
+      "bundleIdentifier": "io.github.wither63z.museopenmonitor",
       "infoPlist": {
         "NSBluetoothAlwaysUsageDescription": "Se usa Bluetooth para conectar con tu diadema Muse y leer señales EEG.",
         "NSBluetoothPeripheralUsageDescription": "Se usa Bluetooth para comunicarse con tu diadema Muse."
       }
     },
     "android": {
-      "package": "com.example.museopenmonitor",
+      "package": "io.github.wither63z.museopenmonitor",
       "permissions": [
         "android.permission.ACCESS_FINE_LOCATION",
         "android.permission.BLUETOOTH_SCAN",
@@ -36,6 +36,10 @@
     ],
     "experiments": {
       "typedRoutes": true
+    },
+    "icon": "./assets/images/icon.png",
+    "web": {
+      "favicon": "./assets/images/favicon.png"
     }
   }
 }
